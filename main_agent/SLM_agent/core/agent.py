@@ -45,6 +45,8 @@ class IterativeRefinementAgent:
             logger.info(f"  SLM Model: {self.config.slm_model}")
         logger.info(f"  Port validation: {self.config.enable_port_validation}")
         logger.info(f"  Few-shot examples: {self.config.use_few_shot_examples}")
+        logger.info(f"  Temperature: {self.config.slm_temperature}")
+        logger.info(f"  Top-p: {self.config.slm_top_p}")
         
         # Initialize components
         self._initialize_components()
@@ -60,6 +62,8 @@ class IterativeRefinementAgent:
                 model=self.config.slm_model,
                 max_length=self.config.slm_max_length,
                 timeout=self.config.slm_timeout,
+                temperature=self.config.slm_temperature,
+                top_p=self.config.slm_top_p,
                 openai_api_key=self.config.openai_api_key
             )
         else:
@@ -68,6 +72,8 @@ class IterativeRefinementAgent:
                 model=self.config.slm_model,
                 max_length=self.config.slm_max_length,
                 timeout=self.config.slm_timeout,
+                temperature=self.config.slm_temperature,
+                top_p=self.config.slm_top_p,
                 api_url=self.config.slm_api_url
             )
         

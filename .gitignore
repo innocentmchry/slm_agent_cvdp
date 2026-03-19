@@ -12,3 +12,7 @@ work_*.txt
 /refinement_analysis*
 /failure_analysis*/
 /model_sweep_results*
+/deepseek*
+/gpt-4o*
+/temp*
+/test*

@@ -15,8 +15,12 @@ def main():
     # Show current configuration
     api_type = os.getenv("API_TYPE", "slm")
     model = os.getenv("SLM_MODEL", "granite")
+    temperature = os.getenv("SLM_TEMPERATURE", "0.15")
+    top_p = os.getenv("SLM_TOP_P", "0.95")
     print(f"API Type: {api_type}")
     print(f"Model: {model}")
+    print(f"Temperature: {temperature}")
+    print(f"Top-p: {top_p}")
     
     if api_type == "openai":
         api_key = os.getenv("OPENAI_API_KEY", "")

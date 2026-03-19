@@ -899,26 +899,9 @@ When generating files, return the file name in the correct place at the folder s
                 model = model
             )
             
-            # If there was an agent error, add it to the result
+            # Keep agent execution issues as metadata so harness test counts remain unchanged.
             if id in self.runs and 'agent_error' in self.runs[id]:
-                if 'tests' in res:
-                    # Add agent error to test results if not already present
-                    agent_error_found = False
-                    for test in res['tests']:
-                        if 'error_msg' in test and test['error_msg'] and 'agent_error' in test['error_msg']:
-                            agent_error_found = True
-                            break
-                    
-                    if not agent_error_found:
-                        # Include agent logfile if available
-                        agent_logfile = self.runs[id].get('agent_logfile', None)
-                        res['tests'].append({
-                            "result": 1,
-                            "log": agent_logfile, 
-                            "error_msg": f"Agent error: {self.runs[id]['agent_error']}",
-                            "execution": 0.0
-                        })
-                        res['errors'] += 1
+                res['agent_error'] = self.runs[id]['agent_error']
             
             # Add agent logfile to result metadata if available
             if id in self.runs and 'agent_logfile' in self.runs[id]:
@@ -943,17 +926,9 @@ When generating files, return the file name in the correct place at the folder s
                 "errors": 1
             }
             
-            # Add agent error if there was one
+            # Keep agent execution issues as metadata so harness test counts remain unchanged.
             if id in self.runs and 'agent_error' in self.runs[id]:
-                # Include agent logfile if available
-                agent_logfile = self.runs[id].get('agent_logfile', None)
-                error_result['tests'].append({
-                    "result": 1,
-                    "log": agent_logfile,
-                    "error_msg": f"Agent error: {self.runs[id]['agent_error']}",
-                    "execution": 0.0
-                })
-                error_result['errors'] += 1
+                error_result['agent_error'] = self.runs[id]['agent_error']
             
             # Add agent logfile to result metadata if available
             if id in self.runs and 'agent_logfile' in self.runs[id]:
@@ -2155,6 +2130,10 @@ class AgenticProcessor (DatasetProcessor):
             if id in self.runs:
                 if 'agent_error' in result:
                     self.runs[id]['agent_error'] = result['agent_error']
+                if 'agent_logfile' in result:
+                    self.runs[id]['agent_logfile'] = result['agent_logfile']
+                if 'agent_patch_file' in result:
+                    self.runs[id]['agent_patch_file'] = result['agent_patch_file']
             
         except Exception as e:
             error_msg = str(e)

@@ -84,7 +84,8 @@ def resolve_host_docker_internal(url: str) -> str:
 class UnifiedAPIClient:
     """Unified interface for both SLM and OpenAI APIs"""
     
-    def __init__(self, api_type: str, model: str, max_length: int, timeout: int, 
+    def __init__(self, api_type: str, model: str, max_length: int, timeout: int,
+                 temperature: float = 0.15, top_p: float = 0.95,
                  api_url: Optional[str] = None, openai_api_key: Optional[str] = None):
         """
         Initialize unified API client
@@ -94,6 +95,8 @@ class UnifiedAPIClient:
             model: Model name/identifier
             max_length: Maximum generation length
             timeout: Request timeout in seconds
+            temperature: Sampling temperature
+            top_p: Nucleus sampling parameter
             api_url: Base URL of SLM API (required for SLM)
             openai_api_key: OpenAI API key (required for OpenAI)
         """
@@ -101,6 +104,8 @@ class UnifiedAPIClient:
         self.model = model
         self.max_length = max_length
         self.timeout = timeout
+        self.temperature = temperature
+        self.top_p = top_p
         
         if self.api_type == "openai":
             if not openai_api_key:
@@ -109,6 +114,8 @@ class UnifiedAPIClient:
             logger.info(f"Initialized OpenAI API Client")
             logger.info(f"  Model: {model}")
             logger.info(f"  Max length: {max_length}")
+            logger.info(f"  Temperature: {temperature}")
+            logger.info(f"  Top-p: {top_p}")
             
         elif self.api_type == "slm":
             if not api_url:
@@ -119,34 +126,45 @@ class UnifiedAPIClient:
             logger.info(f"  URL: {self.api_url}")
             logger.info(f"  Model: {model}")
             logger.info(f"  Max length: {max_length}")
+            logger.info(f"  Temperature: {temperature}")
+            logger.info(f"  Top-p: {top_p}")
             
         else:
             raise ValueError(f"Unsupported API type: {api_type}. Must be 'slm' or 'openai'")
     
-    def generate(self, prompt: str, temperature: float = 0.7) -> Optional[str]:
+    def generate(
+        self,
+        prompt: str,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None
+    ) -> Optional[str]:
         """
         Generate code using the configured API
         
         Args:
             prompt: Input prompt with TASK, REQUIREMENTS, etc.
-            temperature: Sampling temperature (0.0-1.0)
+            temperature: Sampling temperature override
+            top_p: Nucleus sampling override
             
         Returns:
             Generated text or None on failure
         """
+        temperature = self.temperature if temperature is None else temperature
+        top_p = self.top_p if top_p is None else top_p
+
         if self.api_type == "openai":
-            return self._generate_openai(prompt, temperature)
+            return self._generate_openai(prompt, temperature, top_p)
         elif self.api_type == "slm":
-            return self._generate_slm(prompt, temperature)
+            return self._generate_slm(prompt, temperature, top_p)
         else:
             logger.error(f"Unknown API type: {self.api_type}")
             return None
     
-    def _generate_openai(self, prompt: str, temperature: float) -> Optional[str]:
+    def _generate_openai(self, prompt: str, temperature: float, top_p: float) -> Optional[str]:
         """Generate using OpenAI API"""
         try:
             logger.info(f"Calling OpenAI API")
-            logger.info(f"  Model: {self.model}, Temperature: {temperature}")
+            logger.info(f"  Model: {self.model}, Temperature: {temperature}, Top-p: {top_p}")
             logger.info(f"  Prompt length: {len(prompt)} chars")
             
             response = self.openai_client.chat.completions.create(
@@ -156,6 +174,7 @@ class UnifiedAPIClient:
                 ],
                 max_tokens=self.max_length,
                 temperature=temperature,
+                top_p=top_p,
                 timeout=self.timeout
             )
             
@@ -175,18 +194,19 @@ class UnifiedAPIClient:
             logger.error(f"OpenAI API error: {e}")
             return None
     
-    def _generate_slm(self, prompt: str, temperature: float) -> Optional[str]:
+    def _generate_slm(self, prompt: str, temperature: float, top_p: float) -> Optional[str]:
         """Generate using local SLM API"""
         try:
             payload = {
                 "prompt": prompt,
                 "max_length": self.max_length,
                 "model": self.model,
-                "temperature": temperature
+                "temperature": temperature,
+                "top_p": top_p
             }
             
             logger.info(f"Calling SLM API: {self.api_url}/generate")
-            logger.info(f"  Model: {self.model}, Temperature: {temperature}")
+            logger.info(f"  Model: {self.model}, Temperature: {temperature}, Top-p: {top_p}")
             logger.info(f"  Prompt length: {len(prompt)} chars")
             
             response = requests.post(

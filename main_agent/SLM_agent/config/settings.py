@@ -40,8 +40,10 @@ class AgentConfig:
     slm_api_url: str = field(default_factory=lambda: os.getenv("SLM_API_URL", "http://host.docker.internal:8001"))
     openai_api_key: str = field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
     slm_model: str = field(default_factory=lambda: os.getenv("SLM_MODEL", "granite"))
-    slm_max_length: int = field(default_factory=lambda: int(os.getenv("SLM_MAX_LENGTH", "8192")))
+    slm_max_length: int = field(default_factory=lambda: int(os.getenv("SLM_MAX_LENGTH", "12288")))
     slm_timeout: int = field(default_factory=lambda: int(os.getenv("SLM_TIMEOUT", "300")))
+    slm_temperature: float = field(default_factory=lambda: float(os.getenv("SLM_TEMPERATURE", "0.15")))
+    slm_top_p: float = field(default_factory=lambda: float(os.getenv("SLM_TOP_P", "0.95")))
     
     # Prompt engineering settings
     use_few_shot_examples: bool = False
@@ -64,6 +66,8 @@ class AgentConfig:
         assert self.max_iterations > 0, "max_iterations must be positive"
         assert self.slm_timeout > 0, "slm_timeout must be positive"
         assert self.slm_max_length >= 1024, "slm_max_length too small (min: 1024)"
+        assert 0.0 <= self.slm_temperature <= 2.0, "slm_temperature must be in [0.0, 2.0]"
+        assert 0.0 < self.slm_top_p <= 1.0, "slm_top_p must be in (0.0, 1.0]"
         assert self.test_timeout > 0, "test_timeout must be positive"
         assert self.lint_timeout > 0, "lint_timeout must be positive"
         assert self.api_type in ["slm", "openai"], "api_type must be 'slm' or 'openai'"
