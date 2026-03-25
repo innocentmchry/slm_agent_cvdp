@@ -35,10 +35,12 @@ class AgentConfig:
     max_iterations: int = 3
     early_exit_on_success: bool = True
     
-    # API settings - supports both local SLM and OpenAI
-    api_type: str = field(default_factory=lambda: os.getenv("API_TYPE", "slm"))  # "slm" or "openai"
+    # API settings - supports local SLM, OpenAI, and Claude
+    api_type: str = field(default_factory=lambda: os.getenv("API_TYPE", "slm"))  # "slm", "openai", or "claude"
     slm_api_url: str = field(default_factory=lambda: os.getenv("SLM_API_URL", "http://host.docker.internal:8001"))
     openai_api_key: str = field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
+    claude_api_key: str = field(default_factory=lambda: os.getenv("CLAUDE_API_KEY", ""))
+    claude_api_url: str = field(default_factory=lambda: os.getenv("CLAUDE_API_URL", "https://api.anthropic.com"))
     slm_model: str = field(default_factory=lambda: os.getenv("SLM_MODEL", "granite"))
     slm_max_length: int = field(default_factory=lambda: int(os.getenv("SLM_MAX_LENGTH", "12288")))
     slm_timeout: int = field(default_factory=lambda: int(os.getenv("SLM_TIMEOUT", "300")))
@@ -70,10 +72,12 @@ class AgentConfig:
         assert 0.0 < self.slm_top_p <= 1.0, "slm_top_p must be in (0.0, 1.0]"
         assert self.test_timeout > 0, "test_timeout must be positive"
         assert self.lint_timeout > 0, "lint_timeout must be positive"
-        assert self.api_type in ["slm", "openai"], "api_type must be 'slm' or 'openai'"
+        assert self.api_type in ["slm", "openai", "claude"], "api_type must be 'slm', 'openai', or 'claude'"
         
         if self.api_type == "openai":
             assert self.openai_api_key.strip(), "OPENAI_API_KEY must be set for OpenAI API type"
+        if self.api_type == "claude":
+            assert self.claude_api_key.strip(), "CLAUDE_API_KEY must be set for Claude API type"
         # assert self.max_context_files > 0, "max_context_files must be positive"
     
     def __post_init__(self):

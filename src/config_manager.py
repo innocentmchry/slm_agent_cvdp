@@ -104,6 +104,18 @@ class ConfigManager:
                            description="OpenAI API key for model access")
         self.register_config("ANTHROPIC_API_KEY", required=False,
                            description="Anthropic API key for Claude model access")
+        self.register_config("CLAUDE_API_KEY", required=False,
+                   description="Claude API key for Claude model access")
+        self.register_config("CLAUDE_API_URL", required=False,
+                   description="Claude API base URL (defaults to https://api.anthropic.com)")
+        self.register_config("LOCAL_SERVER_URL", default="http://127.0.0.1:8001", type_cast=str,
+               description="Base URL for local model server")
+        self.register_config("LOCAL_SERVER_API_KEY", required=False,
+               description="Optional API key for local model server")
+        self.register_config("LOCAL_SERVER_API_STYLE", default="auto", type_cast=str,
+                   description="Request format for local model server: auto, openai, claude, or slm")
+        self.register_config("LOCAL_SERVER_MODEL", required=False,
+                   description="Optional model identifier to send to local model server")
         self.register_config("NVIDIA_API_KEY", required=False,
                            description="NVIDIA API key for model access")
               

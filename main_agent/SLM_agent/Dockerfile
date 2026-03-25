@@ -49,18 +49,24 @@ RUN chmod +x /app/main.py
 ENV PYTHONPATH=/app
 
 # Set environment variables for model
-# Updated to use OpenAI GPT-4o-mini instead of local SLM server
+# Supported API types: slm, openai, claude
 # ENV API_TYPE=openai
+# ENV API_TYPE=claude
 ENV API_TYPE=slm 
 # ENV OPENAI_API_KEY="your_key_here"
-
+# ENV CLAUDE_API_URL="https://api.anthropic.com"
+# ENV CLAUDE_API_KEY="key"
 # ENV SLM_MODEL=gpt-4o-mini
-ENV SLM_MODEL=deepseek
+# ENV SLM_MODEL=claude-sonnet-4-6
+#ENV SLM_MODEL=granite4
+ENV SLM_MODEL=smollm
+# ENV SLM_MODEL=phi
+# ENV SLM_MAX_LENGTH=16384
 # ENV SLM_MAX_LENGTH=16384
 ENV SLM_MAX_LENGTH=12288
 ENV SLM_TIMEOUT=300
-ENV SLM_TEMPERATURE=0.15
-ENV SLM_TOP_P=0.95
+ENV SLM_TEMPERATURE=0.7
+# ENV SLM_TOP_P=0.9
 
 # Set the entrypoint
 ENTRYPOINT ["python3", "/app/main.py"]

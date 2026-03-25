@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Main entry point for SLM Agent - Supports both SLM and OpenAI GPT-4o-mini"""
+"""Main entry point for SLM Agent - Supports SLM, OpenAI, and Claude"""
 
 import sys
 import os
@@ -29,6 +29,15 @@ def main():
             print("   Please set it with: export OPENAI_API_KEY=your_api_key_here")
             return 1
         print("✅ OpenAI API key configured")
+    elif api_type == "claude":
+        api_key = os.getenv("CLAUDE_API_KEY", "")
+        if not api_key:
+            print("❌ ERROR: CLAUDE_API_KEY environment variable is required for Claude API type")
+            print("   Please set it with: export CLAUDE_API_KEY=your_api_key_here")
+            return 1
+        api_url = os.getenv("CLAUDE_API_URL", "https://api.anthropic.com")
+        print("✅ Claude API key configured")
+        print(f"Claude API URL: {api_url}")
     else:
         api_url = os.getenv("SLM_API_URL", "http://host.docker.internal:8001")
         print(f"SLM API URL: {api_url}")

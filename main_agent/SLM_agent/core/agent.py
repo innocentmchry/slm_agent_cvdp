@@ -40,6 +40,9 @@ class IterativeRefinementAgent:
         logger.info(f"  API Type: {self.config.api_type}")
         if self.config.api_type == "openai":
             logger.info(f"  OpenAI Model: {self.config.slm_model}")
+        elif self.config.api_type == "claude":
+            logger.info(f"  Claude API URL: {self.config.claude_api_url}")
+            logger.info(f"  Claude Model: {self.config.slm_model}")
         else:
             logger.info(f"  SLM API URL: {self.config.slm_api_url}")
             logger.info(f"  SLM Model: {self.config.slm_model}")
@@ -55,7 +58,7 @@ class IterativeRefinementAgent:
     
     def _initialize_components(self):
         """Initialize all agent components"""
-        # LLM interface - supports both SLM and OpenAI
+        # LLM interface - supports SLM, OpenAI, and Claude
         if self.config.api_type == "openai":
             self.llm_client = UnifiedAPIClient(
                 api_type="openai",
@@ -65,6 +68,17 @@ class IterativeRefinementAgent:
                 temperature=self.config.slm_temperature,
                 top_p=self.config.slm_top_p,
                 openai_api_key=self.config.openai_api_key
+            )
+        elif self.config.api_type == "claude":
+            self.llm_client = UnifiedAPIClient(
+                api_type="claude",
+                model=self.config.slm_model,
+                max_length=self.config.slm_max_length,
+                timeout=self.config.slm_timeout,
+                temperature=self.config.slm_temperature,
+                top_p=self.config.slm_top_p,
+                claude_api_key=self.config.claude_api_key,
+                claude_api_url=self.config.claude_api_url
             )
         else:
             self.llm_client = UnifiedAPIClient(

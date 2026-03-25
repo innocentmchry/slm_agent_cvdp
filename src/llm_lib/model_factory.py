@@ -12,6 +12,8 @@ from .openai_llm import OpenAI_Instance
 from .openai_llm_responses import OpenAI_Responses_Instance
 from .subjective_score_model import SubjectiveScoreModel_Instance
 from .local_inference_model import LocalInferenceModel
+from .claude_llm import Claude_Instance
+from .local_server_llm import LocalServer_Instance
 
 logging.basicConfig(level=logging.INFO)
 
@@ -31,6 +33,14 @@ class ModelFactory:
             "gpt-4o": self._create_openai_instance,
             "gpt-4o-mini": self._create_openai_instance,
             "o3-pro": self._create_openai_responses_instance,
+
+            # Claude models
+            "claude": self._create_claude_instance,
+            "claude-sonnet-4-6": self._create_claude_instance,
+
+            # Local server models
+            "local_server": self._create_local_server_instance,
+            "localhost8001": self._create_local_server_instance,
             
             # Subjective scoring model
             "sbj_score": self._create_subjective_score_instance,
@@ -75,6 +85,15 @@ class ModelFactory:
     def _create_openai_responses_instance(self, model_name: str, context: Any, key: Optional[str], **kwargs) -> OpenAI_Responses_Instance:
         """Create an OpenAI model instance using responses"""
         return OpenAI_Responses_Instance(context=context, key=key, model=model_name)
+
+    def _create_claude_instance(self, model_name: str, context: Any, key: Optional[str], **kwargs) -> Claude_Instance:
+        """Create a Claude model instance"""
+        normalized_model = "claude-sonnet-4-6" if model_name == "claude" else model_name
+        return Claude_Instance(context=context, key=key, model=normalized_model)
+
+    def _create_local_server_instance(self, model_name: str, context: Any, key: Optional[str], **kwargs) -> LocalServer_Instance:
+        """Create a local server model instance"""
+        return LocalServer_Instance(context=context, key=key, model=model_name)
     
     def _create_subjective_score_instance(self, model_name: str, context: Any, key: Optional[str], **kwargs) -> SubjectiveScoreModel_Instance:
         """Create a Subjective Scoring model instance"""

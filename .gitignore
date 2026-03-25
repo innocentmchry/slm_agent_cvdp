@@ -16,3 +16,10 @@ work_*.txt
 /gpt-4o*
 /temp*
 /test*
+/claude*
+/granite*
+/phi*
+/smollm*
+/local*
+/nemotron*
+/main_agent/SLM_agent/.env

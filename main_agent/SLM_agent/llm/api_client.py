@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Unified API client for code generation - supports both SLM and OpenAI"""
+"""Unified API client for code generation - supports SLM, OpenAI, and Claude"""
 
 import requests
 import logging
 import socket
-import os
 from typing import Optional, Dict
 from openai import OpenAI
 
@@ -82,16 +81,17 @@ def resolve_host_docker_internal(url: str) -> str:
 
 
 class UnifiedAPIClient:
-    """Unified interface for both SLM and OpenAI APIs"""
+    """Unified interface for SLM, OpenAI, and Claude APIs"""
     
     def __init__(self, api_type: str, model: str, max_length: int, timeout: int,
                  temperature: float = 0.15, top_p: float = 0.95,
-                 api_url: Optional[str] = None, openai_api_key: Optional[str] = None):
+                 api_url: Optional[str] = None, openai_api_key: Optional[str] = None,
+                 claude_api_key: Optional[str] = None, claude_api_url: Optional[str] = None):
         """
         Initialize unified API client
         
         Args:
-            api_type: Type of API ("slm" or "openai")
+            api_type: Type of API ("slm", "openai", or "claude")
             model: Model name/identifier
             max_length: Maximum generation length
             timeout: Request timeout in seconds
@@ -99,6 +99,8 @@ class UnifiedAPIClient:
             top_p: Nucleus sampling parameter
             api_url: Base URL of SLM API (required for SLM)
             openai_api_key: OpenAI API key (required for OpenAI)
+            claude_api_key: Claude API key (required for Claude)
+            claude_api_url: Base URL of Claude API (optional, defaults to Anthropic API)
         """
         self.api_type = api_type.lower()
         self.model = model
@@ -112,6 +114,18 @@ class UnifiedAPIClient:
                 raise ValueError("OpenAI API key is required for OpenAI API type")
             self.openai_client = OpenAI(api_key=openai_api_key)
             logger.info(f"Initialized OpenAI API Client")
+            logger.info(f"  Model: {model}")
+            logger.info(f"  Max length: {max_length}")
+            logger.info(f"  Temperature: {temperature}")
+            logger.info(f"  Top-p: {top_p}")
+
+        elif self.api_type == "claude":
+            if not claude_api_key:
+                raise ValueError("Claude API key is required for Claude API type")
+            self.claude_api_key = claude_api_key
+            self.claude_api_url = (claude_api_url or "https://api.anthropic.com").rstrip("/")
+            logger.info("Initialized Claude API Client")
+            logger.info(f"  URL: {self.claude_api_url}")
             logger.info(f"  Model: {model}")
             logger.info(f"  Max length: {max_length}")
             logger.info(f"  Temperature: {temperature}")
@@ -130,7 +144,7 @@ class UnifiedAPIClient:
             logger.info(f"  Top-p: {top_p}")
             
         else:
-            raise ValueError(f"Unsupported API type: {api_type}. Must be 'slm' or 'openai'")
+            raise ValueError(f"Unsupported API type: {api_type}. Must be 'slm', 'openai', or 'claude'")
     
     def generate(
         self,
@@ -154,10 +168,71 @@ class UnifiedAPIClient:
 
         if self.api_type == "openai":
             return self._generate_openai(prompt, temperature, top_p)
+        elif self.api_type == "claude":
+            return self._generate_claude(prompt, temperature, top_p)
         elif self.api_type == "slm":
             return self._generate_slm(prompt, temperature, top_p)
         else:
             logger.error(f"Unknown API type: {self.api_type}")
+            return None
+
+    def _generate_claude(self, prompt: str, temperature: float, top_p: float) -> Optional[str]:
+        """Generate using Claude (Anthropic Messages API)"""
+        try:
+            payload = {
+                "model": self.model,
+                "max_tokens": self.max_length,
+                "temperature": temperature,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ]
+            }
+
+            logger.info("Calling Claude API")
+            logger.info(f"  Model: {self.model}, Temperature: {temperature}, Top-p: {top_p}")
+            logger.info(f"  Prompt length: {len(prompt)} chars")
+
+            response = requests.post(
+                f"{self.claude_api_url}/v1/messages",
+                headers={
+                    "x-api-key": self.claude_api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json"
+                },
+                json=payload,
+                timeout=self.timeout
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+                content_blocks = data.get("content", [])
+                text_blocks = [
+                    block.get("text", "")
+                    for block in content_blocks
+                    if isinstance(block, dict) and block.get("type") == "text"
+                ]
+                result = "".join(text_blocks).strip()
+                if result:
+                    logger.info(f"Received {len(result)} characters from Claude")
+                    return result
+
+                logger.warning("Claude returned empty text content")
+                return None
+
+            logger.error(f"Claude API error {response.status_code}: {response.text}")
+            return None
+
+        except requests.Timeout:
+            logger.error(f"Claude API timeout after {self.timeout}s")
+            return None
+        except requests.RequestException as e:
+            logger.error(f"Claude API request failed: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error calling Claude API: {e}")
             return None
     
     def _generate_openai(self, prompt: str, temperature: float, top_p: float) -> Optional[str]:
