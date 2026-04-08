@@ -21,6 +21,8 @@ from dotenv import load_dotenv
 import shutil
 import subprocess
 import yaml
+import socket
+from urllib.parse import urlparse
 from . import network_util
 from .dir_monitor import DirectorySizeMonitor
 from . import git_utils
@@ -1466,6 +1468,41 @@ class AgenticProcessor (DatasetProcessor):
         """
         return context['context']
 
+    def _get_host_accessible_ip(self):
+        """
+        Determine a host IP that Docker containers can route to on Linux.
+        """
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                sock.connect(("8.8.8.8", 80))
+                return sock.getsockname()[0]
+        except Exception:
+            return None
+
+    def _resolve_agent_slm_api_url(self):
+        """
+        Resolve an explicit container-reachable SLM API URL override.
+
+        Only apply an override when SLM_API_URL is explicitly set in the
+        launcher environment. If it is not set, preserve the agent image's
+        baked default (for example from Dockerfile ENV).
+        """
+        raw_url = os.getenv("SLM_API_URL")
+        if not raw_url:
+            return None
+
+        parsed = urlparse(raw_url)
+        if not parsed.scheme:
+            raw_url = f"http://{raw_url}"
+            parsed = urlparse(raw_url)
+
+        if parsed.hostname in {"localhost", "127.0.0.1", "host.docker.internal"}:
+            host_ip = self._get_host_accessible_ip()
+            if host_ip:
+                raw_url = raw_url.replace(parsed.hostname, host_ip, 1)
+
+        return raw_url
+
     def create_repository (self, id : str, harness = None, name : str = "", issue : str = "", patches = None):
         # Determine if this specific datapoint requires EDA license network
         from src import commercial_eda
@@ -1594,6 +1631,13 @@ class AgenticProcessor (DatasetProcessor):
         # Create docker-compose configuration for the agent
         if use_git_workspace and workspace_volume:
             # Use volume-based mounting for git workspaces
+            agent_env = {
+                'OPENAI_USER_KEY': config.get('OPENAI_USER_KEY', '')
+            }
+            agent_slm_api_url = self._resolve_agent_slm_api_url()
+            if agent_slm_api_url:
+                agent_env['SLM_API_URL'] = agent_slm_api_url
+
             docker_compose = {
                 'services': {
                     'agent': {
@@ -1604,9 +1648,8 @@ class AgenticProcessor (DatasetProcessor):
                             './rundir:/code/rundir'
                         ],
                         'working_dir': '/code',
-                        'environment': {
-                            'OPENAI_USER_KEY': config.get('OPENAI_USER_KEY', '')
-                        }
+                        'environment': agent_env,
+                        'extra_hosts': ['host.docker.internal:host-gateway']
                     }
                 },
                 'volumes': {
@@ -1618,6 +1661,13 @@ class AgenticProcessor (DatasetProcessor):
             }
         else:
             # Use traditional directory-based mounting
+            agent_env = {
+                'OPENAI_USER_KEY': config.get('OPENAI_USER_KEY', '')
+            }
+            agent_slm_api_url = self._resolve_agent_slm_api_url()
+            if agent_slm_api_url:
+                agent_env['SLM_API_URL'] = agent_slm_api_url
+
             docker_compose = {
                 'services': {
                     'agent': {
@@ -1632,9 +1682,8 @@ class AgenticProcessor (DatasetProcessor):
                             './:/code'
                         ],
                         'working_dir': '/code',
-                        'environment': {
-                            'OPENAI_USER_KEY': config.get('OPENAI_USER_KEY', '')
-                        }
+                        'environment': agent_env,
+                        'extra_hosts': ['host.docker.internal:host-gateway']
                     }
                 }
             }

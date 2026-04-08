@@ -5,10 +5,12 @@
 
 # Build script for iterative refinement agent
 
-IMAGE_NAME="${1:-${IMAGE_NAME:-slm-agent-8001}}"
+SLM_PORT="${2:-${SLM_PORT:-8001}}"
+IMAGE_NAME="${1:-${IMAGE_NAME:-slm-agent-${SLM_PORT}}}"
 
 echo "Building iterative refinement agent Docker image: ${IMAGE_NAME}"
-docker build -t "${IMAGE_NAME}" --no-cache .
+echo "Using SLM port: ${SLM_PORT}"
+docker build -t "${IMAGE_NAME}" --no-cache --build-arg SLM_PORT="${SLM_PORT}" .
 
 if [ $? -eq 0 ]; then
     echo "✅ Build successful!"

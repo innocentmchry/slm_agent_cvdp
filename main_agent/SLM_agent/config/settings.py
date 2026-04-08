@@ -37,7 +37,7 @@ class AgentConfig:
     
     # API settings - supports local SLM, OpenAI, and Claude
     api_type: str = field(default_factory=lambda: os.getenv("API_TYPE", "slm"))  # "slm", "openai", or "claude"
-    slm_api_url: str = field(default_factory=lambda: os.getenv("SLM_API_URL", "http://host.docker.internal:8001"))
+    slm_api_url: str = field(default_factory=lambda: os.getenv("SLM_API_URL", f"http://host.docker.internal:{os.getenv('SLM_PORT', '8001')}"))
     openai_api_key: str = field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
     claude_api_key: str = field(default_factory=lambda: os.getenv("CLAUDE_API_KEY", ""))
     claude_api_url: str = field(default_factory=lambda: os.getenv("CLAUDE_API_URL", "https://api.anthropic.com"))

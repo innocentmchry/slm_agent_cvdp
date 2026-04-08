@@ -2,7 +2,7 @@
 # This allows the agent to access localhost services on the host
 services:
   agent:
-    image: slm-agent-8001
+    image: slm-agent-${SLM_PORT:-8001}
     network_mode: host
     volumes:
       - ./docs:/code/docs
@@ -13,7 +13,7 @@ services:
     working_dir: /code
     environment:
       # With host networking, localhost means the actual host
-      - SLM_API_URL=http://localhost:8001
+      - SLM_API_URL=http://localhost:${SLM_PORT:-8001}
       - SLM_MODEL=granite
       - SLM_MAX_LENGTH=8192
       - SLM_TIMEOUT=3000

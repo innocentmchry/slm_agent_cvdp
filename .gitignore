@@ -23,3 +23,5 @@ work_*.txt
 /local*
 /nemotron*
 /main_agent/SLM_agent/.env
+/gpt*
+/jamba*

@@ -4,6 +4,8 @@
 import subprocess
 import logging
 from typing import Tuple
+from pathlib import Path
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +46,47 @@ class LintRunner:
         # Fallback to Icarus Verilog
         logger.info("Verilator not available, trying Icarus Verilog...")
         return self._run_icarus(rtl_code)
+
+    def _collect_dependency_files(self) -> list[str]:
+        """
+        Collect sibling RTL sources to lint multi-file designs correctly.
+
+        The generated top module is linted from a temporary file. To avoid duplicate
+        module declarations, exclude the expected target file path from /code/rtl.
+        """
+        rtl_dir = Path("/code/rtl")
+        if not rtl_dir.exists():
+            return []
+
+        expected_name = ""
+        raw_sources = (os.getenv("VERILOG_SOURCES") or "").strip()
+        if raw_sources:
+            explicit_entries = [Path(s).name for s in raw_sources.split() if s.strip() and "*" not in Path(s).name]
+            if explicit_entries:
+                toplevel = os.getenv("TOPLEVEL", "")
+                if toplevel and len(explicit_entries) > 1:
+                    expected_name = max(
+                        explicit_entries,
+                        key=lambda name: sum(1 for a, b in zip(Path(name).stem.lower(), toplevel.lower()) if a == b),
+                    )
+                else:
+                    expected_name = explicit_entries[0]
+
+        if not expected_name:
+            toplevel = os.getenv("TOPLEVEL", "")
+            if toplevel:
+                expected_name = f"{toplevel}.sv"
+
+        exts = {".v", ".sv", ".vh", ".svh"}
+        deps: list[str] = []
+        for path in rtl_dir.rglob("*"):
+            if not path.is_file() or path.suffix.lower() not in exts:
+                continue
+            if expected_name and path.name == expected_name:
+                continue
+            deps.append(str(path))
+
+        return sorted(deps)
     
     def _run_verilator(self, rtl_code: str) -> Tuple[bool, str]:
         """Run Verilator lint checks on RTL code string"""
@@ -57,6 +100,10 @@ class LintRunner:
             try:
                 # Run without -Wall to only check for compilation errors, not style warnings
                 cmd = ["verilator", "--lint-only", temp_file]
+                deps = self._collect_dependency_files()
+                if deps:
+                    cmd.extend(deps)
+                    logger.info(f"Including {len(deps)} dependency file(s) for lint")
                 
                 logger.info(f"Running: {' '.join(cmd)}")
                 
@@ -94,7 +141,7 @@ class LintRunner:
                     # Only warnings (with error codes like %Error-XXX), no real compilation errors
                     logger.info("Verilator has warnings but no compilation errors - treating as PASSED")
                     logger.info(f"Warnings: {output[:500]}")  # Log first 500 chars of warnings
-                    return True, {output[:500]}
+                    return True, output[:500]
                 else:
                     logger.warning("Verilator lint checks FAILED with compilation errors")
                     # Extract first 50 lines of errors
@@ -130,6 +177,10 @@ class LintRunner:
             try:
                 # Run without -Wall to only check for compilation errors
                 cmd = ["iverilog", "-tnull", temp_file]
+                deps = self._collect_dependency_files()
+                if deps:
+                    cmd.extend(deps)
+                    logger.info(f"Including {len(deps)} dependency file(s) for lint")
                 
                 logger.info(f"Running: {' '.join(cmd)}")
                 

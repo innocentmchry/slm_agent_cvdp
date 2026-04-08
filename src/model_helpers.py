@@ -159,6 +159,47 @@ When generating files, return the file name in the correct place at the folder s
                 return [process_code_blocks(item) for item in value]
             return value
 
+        def try_parse_json_candidates(raw_text):
+            """Try parsing JSON from several candidate substrings."""
+            candidates = []
+            cleaned = raw_text.strip()
+            if cleaned:
+                candidates.append(cleaned)
+
+            # Extract JSON/code fenced blocks first, since many local models respond this way.
+            fenced_pattern = r"```(?:json)?\n(.*?)```"
+            fenced_matches = re.findall(fenced_pattern, raw_text, re.DOTALL | re.IGNORECASE)
+            for block in fenced_matches:
+                block_clean = block.strip()
+                if block_clean:
+                    candidates.append(block_clean)
+
+            # Fallback: trim to outer-most braces if present.
+            start = cleaned.find('{')
+            end = cleaned.rfind('}')
+            if start != -1 and end != -1 and end > start:
+                brace_slice = cleaned[start:end + 1].strip()
+                if brace_slice:
+                    candidates.append(brace_slice)
+
+            seen = set()
+            for candidate in candidates:
+                if candidate in seen:
+                    continue
+                seen.add(candidate)
+                try:
+                    return json.loads(candidate)
+                except json.JSONDecodeError:
+                    # Attempt light formatting repair before giving up this candidate.
+                    fixed_candidate = self.fix_json_formatting(candidate)
+                    if fixed_candidate != candidate:
+                        try:
+                            return json.loads(fixed_candidate)
+                        except json.JSONDecodeError:
+                            pass
+
+            return None
+
         try:
             # Single file with direct text mode
             if files and len(files) == 1 and no_schema:
@@ -171,10 +212,9 @@ When generating files, return the file name in the correct place at the folder s
             else:
                 # For JSON responses, parse as before
                 response_text = re.sub(r'[\x00-\x1F\x7F]', '', res.strip())
-                start = response_text.find('{')
-                end = response_text[::-1].find('}')
-                response_text = response_text[start:-end if end else None]
-                output = json.loads(response_text)
+                output = try_parse_json_candidates(response_text)
+                if output is None:
+                    raise json.decoder.JSONDecodeError("Unable to decode JSON from model response", response_text, 0)
 
                 # Process code blocks in the output
                 if 'code' in output:

@@ -514,6 +514,17 @@ if __name__ == "__main__":
     atexit.register(cleanup_logging)
 
     obj.repo.threads = args.threads
+    if args.llm and not args.agent:
+        model_to_use = args.model if args.model is not None else config.get("DEFAULT_MODEL")
+        if model_to_use in ["local_server", "localhost8001"]:
+            local_server_workers = max(1, int(config.get("LOCAL_SERVER_MAX_CONCURRENCY", 1)))
+            if obj.repo.threads > local_server_workers:
+                print(
+                    "Capping benchmark threads for local_server mode "
+                    f"from {obj.repo.threads} to {local_server_workers} "
+                    "to avoid local GPU server overload."
+                )
+                obj.repo.threads = local_server_workers
     obj.repo.disable_patch = args.no_patch  # Pass the disable_patch flag to the repo
     
     # Only create model if we're in LLM mode and either:

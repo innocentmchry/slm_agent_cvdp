@@ -11,6 +11,7 @@ import re
 import time
 import signal
 import tempfile
+import shutil
 from testing.lint_runner import LintRunner
 
 logger = logging.getLogger(__name__)
@@ -66,18 +67,174 @@ class TestRunner:
         if not stage_success:
             logger.error(f"Failed to stage RTL code before harness execution: {stage_error}")
             return False, False, lint_errors, f"Failed to stage RTL code: {stage_error}"
+
+        # Step 2: Run pre-harness testbenches under /code/verif using iverilog/vvp when available.
+        logger.info("Step 2: Running pre-harness verif testbenches (if available)...")
+        verif_success, verif_errors = self._run_pre_harness_verification()
+        verif_warning = ""
+        if not verif_success:
+            verif_warning = (
+                "Your previous code has verification errors in pre-harness verif execution.\n"
+                + verif_errors
+            )
+            logger.warning(verif_warning)
         
-        # Step 2: Run harness tests from docker-compose.yml
-        logger.info("Step 2: Running test harness from docker-compose.yml...")
+        # Step 3: Run harness tests from docker-compose.yml
+        logger.info("Step 3: Running test harness from docker-compose.yml...")
         harness_success, harness_errors = self._run_harness_tests()
         
         if not harness_success:
             logger.error(f"Harness tests failed: {harness_errors}")
+            combined_errors = harness_errors
+            if verif_warning:
+                combined_errors = f"{verif_warning}\n\n{harness_errors}"
             # last second place is reserved for warnings, last place always an error whether its compilation or harness.
-            return True, False, lint_errors, harness_errors
+            return True, False, lint_errors, combined_errors
 
         logger.info("All tests passed!")
-        return True, True, "", ""
+        # If verif had issues but harness passed, keep pass status and surface a warning.
+        return True, True, verif_warning, ""
+
+    def _run_pre_harness_verification(self) -> Tuple[bool, str]:
+        """
+        Run available standalone verif testbenches before harness execution.
+
+        Behavior:
+        - Uses iverilog/vvp if present.
+        - Executes each discovered testbench independently.
+        - Never blocks harness execution; caller decides pass/fail policy.
+        """
+        verif_dir = Path("/code/verif")
+        rtl_dir = Path("/code/rtl")
+
+        if not verif_dir.exists():
+            logger.info("No /code/verif directory found, skipping pre-harness verif execution")
+            return True, ""
+
+        if shutil.which("iverilog") is None or shutil.which("vvp") is None:
+            logger.warning("iverilog/vvp not available, skipping pre-harness verif execution")
+            return True, ""
+
+        testbenches = self._discover_testbenches(verif_dir)
+        if not testbenches:
+            logger.info("No verif testbench files detected, skipping pre-harness verif execution")
+            return True, ""
+
+        rtl_sources = self._collect_sv_files(rtl_dir)
+        if not rtl_sources:
+            logger.info("No RTL sources detected under /code/rtl for pre-harness verif execution")
+
+        support_verif_files = self._collect_verif_support_files(verif_dir, {tb_file for tb_file, _ in testbenches})
+
+        failures: List[str] = []
+
+        for tb_file, top_module in testbenches:
+            output_exe = Path(tempfile.gettempdir()) / f"precheck_{tb_file.stem}.out"
+
+            compile_cmd = [
+                "iverilog",
+                "-g2012",
+                "-s",
+                top_module,
+                "-o",
+                str(output_exe),
+                *rtl_sources,
+                *support_verif_files,
+                str(tb_file),
+            ]
+
+            logger.info(f"Pre-harness compile: {' '.join(compile_cmd)}")
+            comp = subprocess.run(
+                compile_cmd,
+                capture_output=True,
+                text=True,
+                timeout=self.test_timeout,
+                cwd="/code",
+            )
+
+            if comp.returncode != 0:
+                compile_err = (comp.stderr or comp.stdout or "Compilation failed")[-1200:]
+                failures.append(
+                    f"[TB compile failed] {tb_file.name} (top={top_module})\n{compile_err}"
+                )
+                continue
+
+            run_cmd = ["vvp", str(output_exe)]
+            logger.info(f"Pre-harness run: {' '.join(run_cmd)}")
+            sim = subprocess.run(
+                run_cmd,
+                capture_output=True,
+                text=True,
+                timeout=self.test_timeout,
+                cwd="/code",
+            )
+
+            sim_output = (sim.stdout or "") + ("\n" + sim.stderr if sim.stderr else "")
+            output_lower = sim_output.lower()
+            explicit_fail = any(token in output_lower for token in ["\nfail", " fail", "assert", "error:"])
+
+            if sim.returncode != 0 or explicit_fail:
+                failures.append(
+                    f"[TB run failed] {tb_file.name} (top={top_module})\n{sim_output[-1200:]}"
+                )
+
+        if failures:
+            joined = "\n\n".join(failures)
+            return False, joined
+
+        logger.info("Pre-harness verif execution passed for all discovered testbenches")
+        return True, ""
+
+    def _discover_testbenches(self, verif_dir: Path) -> List[Tuple[Path, str]]:
+        """Discover testbench files and top modules under /code/verif."""
+        tbs: List[Tuple[Path, str]] = []
+        for file_path in self._collect_sv_files(verif_dir):
+            if not file_path.endswith((".sv", ".v")):
+                continue
+
+            candidate = Path(file_path)
+            stem = candidate.stem.lower()
+            if not (stem.startswith("tb_") or stem.endswith("_tb") or "test" in stem):
+                continue
+
+            module_name = self._extract_module_name(candidate)
+            if module_name:
+                tbs.append((candidate, module_name))
+
+        return tbs
+
+    @staticmethod
+    def _extract_module_name(file_path: Path) -> Optional[str]:
+        """Extract first module name from an SV/V file."""
+        try:
+            content = file_path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            return None
+
+        match = re.search(r"\bmodule\s+(\w+)", content)
+        return match.group(1) if match else None
+
+    @staticmethod
+    def _collect_sv_files(root: Path) -> List[str]:
+        """Collect Verilog/SystemVerilog files recursively."""
+        if not root.exists():
+            return []
+        exts = {".sv", ".v", ".svh", ".vh"}
+        files: List[str] = []
+        for p in root.rglob("*"):
+            if p.is_file() and p.suffix.lower() in exts:
+                files.append(str(p))
+        return sorted(files)
+
+    def _collect_verif_support_files(self, verif_dir: Path, tb_files: set[Path]) -> List[str]:
+        """Collect non-testbench verif files to support compilation."""
+        support: List[str] = []
+        for file_path in self._collect_sv_files(verif_dir):
+            p = Path(file_path)
+            if p in tb_files:
+                continue
+            support.append(file_path)
+        return sorted(support)
     
     def _run_harness_tests(self) -> Tuple[bool, str]:
         """

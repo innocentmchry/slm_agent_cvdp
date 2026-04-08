@@ -3,6 +3,8 @@
 
 import os
 import logging
+import threading
+import time
 import requests
 from typing import Optional, Dict, Any
 from src.config_manager import config
@@ -13,6 +15,12 @@ logging.basicConfig(level=logging.INFO)
 
 class LocalServer_Instance:
     """Local LLM server implementation compatible with benchmark model interface."""
+
+    _semaphore_lock = threading.Lock()
+    _request_semaphore = None
+    _request_semaphore_size = None
+    _ready_urls = set()
+    _ready_urls_lock = threading.Lock()
 
     def __init__(self, context: str = "You are a helpful assistant.", key=None, model=None):
         if model is None:
@@ -26,6 +34,17 @@ class LocalServer_Instance:
         self.api_key = key or config.get("LOCAL_SERVER_API_KEY")
         self.api_style = (config.get("LOCAL_SERVER_API_STYLE") or "auto").strip().lower()
         self.server_model = config.get("LOCAL_SERVER_MODEL")
+        self.max_concurrency = max(1, int(config.get("LOCAL_SERVER_MAX_CONCURRENCY", 1)))
+        self.startup_timeout = max(1, int(config.get("LOCAL_SERVER_STARTUP_TIMEOUT", 600)))
+        self.startup_poll_interval = max(1, int(config.get("LOCAL_SERVER_STARTUP_POLL_INTERVAL", 2)))
+        self.health_path = str(config.get("LOCAL_SERVER_HEALTH_PATH", "/health")).strip() or "/health"
+        self.request_timeout_override = config.get("LOCAL_SERVER_REQUEST_TIMEOUT", None)
+        self.max_tokens = max(1, int(config.get("LOCAL_SERVER_MAX_TOKENS", 12288)))
+
+        if not self.health_path.startswith("/"):
+            self.health_path = f"/{self.health_path}"
+
+        self._ensure_request_semaphore()
 
         if self.api_style not in {"auto", "openai", "claude", "slm"}:
             raise ValueError(
@@ -33,7 +52,75 @@ class LocalServer_Instance:
             )
 
         logging.info(
-            f"Created LocalServer model. model={self.model}, url={self.api_url}, style={self.api_style}"
+            "Created LocalServer model. "
+            f"model={self.model}, url={self.api_url}, style={self.api_style}, "
+            f"max_concurrency={self.max_concurrency}, startup_timeout={self.startup_timeout}s"
+        )
+
+    @classmethod
+    def _ensure_request_semaphore(cls, requested_size: int = 1) -> None:
+        requested_size = max(1, int(requested_size))
+        with cls._semaphore_lock:
+            if cls._request_semaphore is None or cls._request_semaphore_size != requested_size:
+                cls._request_semaphore = threading.BoundedSemaphore(requested_size)
+                cls._request_semaphore_size = requested_size
+
+    def _resolve_request_timeout(self, timeout: Optional[int]) -> Optional[int]:
+        """Resolve effective timeout for requests; allow disabling timeout via LOCAL_SERVER_REQUEST_TIMEOUT=0."""
+        effective_timeout = timeout
+
+        override = self.request_timeout_override
+        if override is not None:
+            try:
+                override_int = int(override)
+            except (TypeError, ValueError):
+                override_int = None
+
+            if override_int == 0:
+                return None
+            if override_int is not None:
+                if effective_timeout is None:
+                    effective_timeout = override_int
+                else:
+                    effective_timeout = max(int(effective_timeout), override_int)
+
+        if effective_timeout is None:
+            return None
+
+        try:
+            parsed = int(effective_timeout)
+        except (TypeError, ValueError):
+            return None
+
+        if parsed <= 0:
+            return None
+        return parsed
+
+    def _wait_for_server_ready(self) -> None:
+        """Wait until local server health endpoint is reachable before first request per URL."""
+        with self._ready_urls_lock:
+            if self.api_url in self._ready_urls:
+                return
+
+        health_url = f"{self.api_url}{self.health_path}"
+        deadline = time.time() + self.startup_timeout
+        last_error = ""
+
+        while time.time() < deadline:
+            try:
+                response = requests.get(health_url, timeout=5)
+                if response.status_code == 200:
+                    with self._ready_urls_lock:
+                        self._ready_urls.add(self.api_url)
+                    return
+                last_error = f"health returned status {response.status_code}"
+            except requests.RequestException as exc:
+                last_error = str(exc)
+
+            time.sleep(self.startup_poll_interval)
+
+        raise ValueError(
+            f"Local server not ready at {health_url} within {self.startup_timeout}s. Last error: {last_error}"
         )
 
     @property
@@ -100,7 +187,7 @@ class LocalServer_Instance:
             return str(self.server_model).strip()
         return None
 
-    def _post_openai(self, prompt: str, system_prompt: str, timeout: int) -> str:
+    def _post_openai(self, prompt: str, system_prompt: str, timeout: Optional[int]) -> str:
         headers = {"content-type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
@@ -124,13 +211,13 @@ class LocalServer_Instance:
         response.raise_for_status()
         return self._extract_openai_content(response.json())
 
-    def _post_claude(self, prompt: str, system_prompt: str, timeout: int) -> str:
+    def _post_claude(self, prompt: str, system_prompt: str, timeout: Optional[int]) -> str:
         headers = {"content-type": "application/json"}
         if self.api_key:
             headers["x-api-key"] = self.api_key
 
         payload = {
-            "max_tokens": 4096,
+            "max_tokens": self.max_tokens,
             "messages": [{"role": "user", "content": prompt}],
             "system": system_prompt,
         }
@@ -147,14 +234,16 @@ class LocalServer_Instance:
         response.raise_for_status()
         return self._extract_claude_content(response.json())
 
-    def _post_slm(self, prompt: str, timeout: int) -> str:
+    def _post_slm(self, prompt: str, system_prompt: str, timeout: Optional[int]) -> str:
         headers = {"content-type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
+        full_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
+
         payload: Dict[str, Any] = {
-            "prompt": prompt,
-            "max_tokens": 4096,
+            "prompt": full_prompt,
+            "max_tokens": self.max_tokens,
             "temperature": 0.7,
             "top_p": 0.9,
         }
@@ -178,6 +267,8 @@ class LocalServer_Instance:
         if timeout == 60:
             timeout = config.get("MODEL_TIMEOUT", 60)
 
+        timeout = self._resolve_request_timeout(timeout)
+
         expected_single_file = files and len(files) == 1 and schema is None
 
         try:
@@ -192,32 +283,36 @@ class LocalServer_Instance:
             logging.debug(f"API style: {self.api_style}")
 
         try:
+            self._wait_for_server_ready()
+
             content = ""
-            if self.api_style == "openai":
-                content = self._post_openai(prompt, system_prompt, timeout)
-            elif self.api_style == "claude":
-                content = self._post_claude(prompt, system_prompt, timeout)
-            elif self.api_style == "slm":
-                content = self._post_slm(prompt, timeout)
-            else:
-                openai_error = None
-                claude_error = None
-                try:
+            self._ensure_request_semaphore(self.max_concurrency)
+            with self._request_semaphore:
+                if self.api_style == "openai":
                     content = self._post_openai(prompt, system_prompt, timeout)
-                except requests.RequestException as e:
-                    openai_error = e
+                elif self.api_style == "claude":
+                    content = self._post_claude(prompt, system_prompt, timeout)
+                elif self.api_style == "slm":
+                    content = self._post_slm(prompt, system_prompt, timeout)
+                else:
+                    openai_error = None
+                    claude_error = None
                     try:
-                        content = self._post_claude(prompt, system_prompt, timeout)
-                        if self.debug:
-                            logging.debug(f"OpenAI-style endpoint failed, Claude-style succeeded: {str(openai_error)}")
-                    except requests.RequestException as e2:
-                        claude_error = e2
-                        content = self._post_slm(prompt, timeout)
-                        if self.debug:
-                            logging.debug(
-                                "OpenAI-style and Claude-style endpoints failed, SLM-style succeeded: "
-                                f"openai={str(openai_error)}, claude={str(claude_error)}"
-                            )
+                        content = self._post_openai(prompt, system_prompt, timeout)
+                    except requests.RequestException as e:
+                        openai_error = e
+                        try:
+                            content = self._post_claude(prompt, system_prompt, timeout)
+                            if self.debug:
+                                logging.debug(f"OpenAI-style endpoint failed, Claude-style succeeded: {str(openai_error)}")
+                        except requests.RequestException as e2:
+                            claude_error = e2
+                            content = self._post_slm(prompt, system_prompt, timeout)
+                            if self.debug:
+                                logging.debug(
+                                    "OpenAI-style and Claude-style endpoints failed, SLM-style succeeded: "
+                                    f"openai={str(openai_error)}, claude={str(claude_error)}"
+                                )
 
             if not content:
                 raise ValueError("Local server returned empty response")

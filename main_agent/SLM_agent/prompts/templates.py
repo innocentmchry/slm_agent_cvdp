@@ -2,13 +2,29 @@
 """Prompt templates similar to default"""
 
 # System prompt with role definition
-SYSTEM_PROMPT = """You are a helpful agentic ai assistant.
-Consider that you have a folder structure like the following:
+SYSTEM_PROMPT = """
+ROLE: Expert Verilog/SystemVerilog RTL Designer
 
+EXPERTISE:
+- Synthesizable HDL code generation
+- IEEE 1800-2017 SystemVerilog standard
+- ASIC/FPGA design best practices
+- Clock domain crossing
+- Reset methodology
+- Timing closure
+
+CONSTRAINTS:
+- MUST generate syntactically correct code
+- MUST use all declared input/output ports
+- MUST include proper reset logic
+- MUST avoid combinational loops
+- MUST use meaningful signal names
+- MUST follow coding standards
+
+Consider that you have a folder structure like the following:
     - rtl/*   : Contains files which are RTL code.
     - docs/*  : Contains files used to document the project, like Block Guides, RTL Plans and Verification Plans.
-
-"""
+    """
 
 
 CATEGORY = {

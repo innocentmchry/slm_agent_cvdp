@@ -48,23 +48,30 @@ RUN chmod +x /app/main.py
 # Set Python path to find modules
 ENV PYTHONPATH=/app
 
+# Build-time SLM port option (default: 8001)
+ARG SLM_PORT=8001
+ENV SLM_API_URL=http://host.docker.internal:${SLM_PORT}
+
 # Set environment variables for model
 # Supported API types: slm, openai, claude
 # ENV API_TYPE=openai
 # ENV API_TYPE=claude
 ENV API_TYPE=slm 
-# ENV OPENAI_API_KEY="your_key_here"
 # ENV CLAUDE_API_URL="https://api.anthropic.com"
-# ENV CLAUDE_API_KEY="key"
+# ENV SLM_MODEL=deepseek
 # ENV SLM_MODEL=gpt-4o-mini
 # ENV SLM_MODEL=claude-sonnet-4-6
-#ENV SLM_MODEL=granite4
-ENV SLM_MODEL=smollm
-# ENV SLM_MODEL=phi
+# ENV SLM_MODEL=granite4
+# ENV SLM_MODEL=smollm
+# ENV SLM_MODEL=jamba
+# ENV SLM_MODEL=phi4-reasoning
+# ENV SLM_MODEL=phi4-custom
+# ENV SLM_MODEL=nemotron
+ENV SLM_MODEL=phi
 # ENV SLM_MAX_LENGTH=16384
 # ENV SLM_MAX_LENGTH=16384
 ENV SLM_MAX_LENGTH=12288
-ENV SLM_TIMEOUT=300
+ENV SLM_TIMEOUT=1000
 ENV SLM_TEMPERATURE=0.7
 # ENV SLM_TOP_P=0.9
 

@@ -129,16 +129,43 @@ class PromptBuilder:
         lines = []
         file_count = 0
         total_context_chars = 0
+        max_chars = self.max_prompt_chars
 
         priority_order = ["rtl/", "docs/", "verif/"]
-        
         for prefix in priority_order:
             for file_path, content in context.items():
-                if file_path.startswith(prefix):
-                    file_section = f"\n Consider the following content for the file: {file_path}\n```\n{content}\n```"
-                    lines.append(file_section)
-                    total_context_chars += len(file_section)
-                    file_count += 1
+                if file_count >= self.max_context_files:
+                    break
+                if not file_path.startswith(prefix):
+                    continue
+
+                # Keep RTL files intact when possible, trim docs first, then verif.
+                budget_left = max_chars - total_context_chars
+                if budget_left <= 0:
+                    break
+
+                header = f"\n Consider the following content for the file: {file_path}\n```\n"
+                footer = "\n```"
+                overhead = len(header) + len(footer)
+                if budget_left <= overhead:
+                    break
+
+                content_budget = budget_left - overhead
+                file_content = content
+                if len(file_content) > content_budget:
+                    # Prefer preserving RTL context; docs/verif get truncated first.
+                    if prefix in ("docs/", "verif/") or file_count > 0:
+                        file_content = file_content[:content_budget] + "\n... (truncated)"
+                    else:
+                        file_content = file_content[:content_budget]
+
+                file_section = f"{header}{file_content}{footer}"
+                lines.append(file_section)
+                total_context_chars += len(file_section)
+                file_count += 1
+
+            if file_count >= self.max_context_files or total_context_chars >= max_chars:
+                break
         
 
         
@@ -146,6 +173,7 @@ class PromptBuilder:
             return ""
         
         logger.info(f"Processed {file_count} context files")
+        logger.info(f"Context budget usage: {total_context_chars}/{max_chars} chars")
         return "\n".join(lines)
     
     def build_refinement_prompt(

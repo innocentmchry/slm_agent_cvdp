@@ -6,6 +6,8 @@ import logging
 import socket
 from typing import Optional, Dict
 from openai import OpenAI
+import re
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +65,7 @@ def resolve_host_docker_internal(url: str) -> str:
             # Try to ping this IP (quick check)
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(1)
-            result = sock.connect_ex((test_ip, 8001))
+            result = sock.connect_ex((test_ip, urlparse(url).port or 8001))
             sock.close()
             
             if result == 0:
@@ -165,6 +167,7 @@ class UnifiedAPIClient:
         """
         temperature = self.temperature if temperature is None else temperature
         top_p = self.top_p if top_p is None else top_p
+        prompt = self._sanitize_prompt(prompt)
 
         if self.api_type == "openai":
             return self._generate_openai(prompt, temperature, top_p)
@@ -175,6 +178,18 @@ class UnifiedAPIClient:
         else:
             logger.error(f"Unknown API type: {self.api_type}")
             return None
+
+    @staticmethod
+    def _sanitize_prompt(prompt: str) -> str:
+        """Strip problematic control characters while preserving normal formatting."""
+        if not isinstance(prompt, str):
+            prompt = str(prompt)
+
+        # Remove null and other non-printable control chars except tab/newline/carriage return.
+        cleaned = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", "", prompt)
+        if cleaned != prompt:
+            logger.warning("Prompt contained control characters; sanitized before API call")
+        return cleaned
 
     def _generate_claude(self, prompt: str, temperature: float, top_p: float) -> Optional[str]:
         """Generate using Claude (Anthropic Messages API)"""

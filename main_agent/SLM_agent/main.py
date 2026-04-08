@@ -39,7 +39,7 @@ def main():
         print("✅ Claude API key configured")
         print(f"Claude API URL: {api_url}")
     else:
-        api_url = os.getenv("SLM_API_URL", "http://host.docker.internal:8001")
+        api_url = os.getenv("SLM_API_URL", f"http://host.docker.internal:{os.getenv('SLM_PORT', '8001')}")
         print(f"SLM API URL: {api_url}")
     
     print("=" * 60)
