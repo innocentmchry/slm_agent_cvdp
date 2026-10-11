@@ -45,6 +45,8 @@ def add_common_arguments(parser: argparse.ArgumentParser) -> None:
     #                    help="Inform the system to run the docker locally.")
     parser.add_argument("-g", "--agent", type=str,
                        help="Select the agent to run the analysis.")
+    parser.add_argument("--start", "--start-from", dest="start_from", type=str,
+                       help="(Agent mode) Resume agent execution from a specific datapoint directory/ID and skip earlier ones")
     
     # Local inference arguments (copilot mode only)
     parser.add_argument("--prompts-responses-file", type=str,
@@ -144,6 +146,11 @@ def add_validation_checks(args: argparse.Namespace) -> None:
         if args.prompts_responses_file and args.agent:
             print("Error: Local inference modes are not compatible with --agent (agentic mode)")
             exit(1)
+
+    # Agent resume marker only applies to agent-based execution
+    if hasattr(args, 'start_from') and args.start_from and not getattr(args, 'agent', None):
+        print("Error: --start/--start-from requires --agent")
+        exit(1)
 
 
 def clean_filename(filename: str) -> str:

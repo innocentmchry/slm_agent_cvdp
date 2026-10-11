@@ -35,6 +35,27 @@ class CopilotWrapper:
         self.network_name           = network_name
         self.manage_network         = manage_network
 
+    def _load_prepared_runs(self, runs_file):
+        """Load previously prepared runs into memory so execution can resume without all_prepare."""
+        with open(runs_file, 'r+') as runs_f:
+            runs = runs_f.readlines()
+
+        # Replicate repositories from prepared state
+        for run in runs:
+            cxt = json.loads(run)
+            id = list(cxt.keys())[0]
+            vlt = list(cxt.values())[0]
+
+            (obj, repo) = self.repo.set_repo(id=id, context=vlt)
+            self.repo.runs[id] = {
+                'obj': obj,
+                'repo': repo,
+                'input': vlt['input'],
+                'output': vlt['output']
+            }
+
+        return len(runs)
+
     def create_model(self, version = None, **kwargs):
         if version is None:
             version = config.get("DEFAULT_MODEL")
@@ -43,32 +64,37 @@ class CopilotWrapper:
     def benchmark(self, runs_file = None):
         if runs_file is None:
             self.repo.process_json()
+
+            prepared_runs_file = os.path.join(self.repo.prefix, "prompt_response.jsonl")
+            refine_enabled = hasattr(self.repo, 'refine_model') and self.repo.refine_model
+            can_reuse_prepared = (
+                os.path.isdir(self.repo.prefix)
+                and os.path.isfile(prepared_runs_file)
+                and not refine_enabled
+            )
+
+            if can_reuse_prepared:
+                print(f"Found existing prefix directory: {self.repo.prefix}")
+                print(f"Reusing prepared runs from {prepared_runs_file} and skipping all_prepare")
+                loaded = self._load_prepared_runs(prepared_runs_file)
+                print(f"Loaded {loaded} prepared runs")
+            else:
+                if refine_enabled:
+                    print("Refinement enabled, running all_prepare to regenerate repositories from refined prompts")
             
-            # If refinement is enabled, run it before preparation
-            if hasattr(self.repo, 'refine_model') and self.repo.refine_model:
-                print(f"Refining datapoints using model: {self.repo.refine_model}")
-                refine_results = self.repo.all_refine(model_factory=self.factory)
-                print(f"Refinement completed: {refine_results['refined']} datapoints refined")
-                sys.stdout.flush()
+                # If refinement is enabled, run it before preparation
+                if refine_enabled:
+                    print(f"Refining datapoints using model: {self.repo.refine_model}")
+                    refine_results = self.repo.all_refine(model_factory=self.factory)
+                    print(f"Refinement completed: {refine_results['refined']} datapoints refined")
+                    sys.stdout.flush()
             
-            self.repo.all_prepare(self.model)
+                self.repo.all_prepare(self.model)
+
             res = self.repo.all_run(self.model)
 
         else:
-
-            with open (runs_file, 'r+') as runs_f:
-                runs = runs_f.readlines()
-
-            # Replicate repositories
-            for run in runs:
-
-                # From String to Dictionary
-                cxt = json.loads(run)
-                id  = list(cxt.keys())[0]
-                vlt = list(cxt.values())[0]
-
-                (obj, repo)         = self.repo.set_repo(id=id, context=vlt)
-                self.repo.runs [id] = {'obj' : obj, 'repo' : repo, 'input' : vlt ['input'], 'output' : vlt ['output']}
+            self._load_prepared_runs(runs_file)
 
             res = self.repo.all_run(self.model)
 
@@ -151,16 +177,41 @@ class AgenticWrapper (CopilotWrapper):
     def benchmark(self, runs_file = None):
         if runs_file is None:
             self.repo.process_json()
+
+            prepared_runs_file = os.path.join(self.repo.prefix, "prompt_response.jsonl")
+            refine_enabled = hasattr(self.repo, 'refine_model') and self.repo.refine_model
+            can_reuse_prepared = (
+                os.path.isdir(self.repo.prefix)
+                and os.path.isfile(prepared_runs_file)
+                and not refine_enabled
+            )
+
+            if can_reuse_prepared:
+                print(f"Found existing prefix directory: {self.repo.prefix}")
+                print(f"Reusing prepared runs from {prepared_runs_file} and skipping all_prepare")
+                loaded = self._load_prepared_runs(prepared_runs_file)
+                print(f"Loaded {loaded} prepared runs")
+            else:
+                if refine_enabled:
+                    print("Refinement enabled, running all_prepare to regenerate repositories from refined prompts")
             
-            # If refinement is enabled, run it before preparation
-            if hasattr(self.repo, 'refine_model') and self.repo.refine_model:
-                print(f"Refining datapoints using model: {self.repo.refine_model}")
-                refine_results = self.repo.all_refine(model_factory=self.factory)
-                print(f"Refinement completed: {refine_results['refined']} datapoints refined")
+                # If refinement is enabled, run it before preparation
+                if refine_enabled:
+                    print(f"Refining datapoints using model: {self.repo.refine_model}")
+                    refine_results = self.repo.all_refine(model_factory=self.factory)
+                    print(f"Refinement completed: {refine_results['refined']} datapoints refined")
+                    sys.stdout.flush()
+            
+                self.repo.all_prepare(self.model)
+
+            if hasattr(self.repo, 'agent') and self.repo.agent and not self.repo.golden:
+                print(f"Running agent processing with {self.repo.agent}...")
+                self.repo.all_agent()
+                print("Agent processing completed")
                 sys.stdout.flush()
-            
-            self.repo.all_prepare(self.model)
+
             res = self.repo.all_run(self.model)
+
         else:
             # Use the parent class implementation for runs_file case
             return super().benchmark(runs_file)

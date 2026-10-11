@@ -175,7 +175,7 @@ class DirectorySizeMonitor:
         self.debug = debug
     
     def start_monitoring(self, directory, process_id, kill_cmd, threshold_mb=None, interval_seconds=None, 
-                         compress_on_threshold=False, min_file_size_mb=None):
+                         compress_on_threshold=False, min_file_size_mb=None, memory_threshold_percent=None):
         """Start monitoring a directory for size threshold.
         
         Args:
@@ -186,6 +186,7 @@ class DirectorySizeMonitor:
             interval_seconds: Check interval (defaults to env var or 10)
             compress_on_threshold: Whether to compress files after termination
             min_file_size_mb: Minimum file size in MB to consider for compression (defaults to env var)
+            memory_threshold_percent: Host memory usage threshold percentage to force-kill process (default: 90)
         """
         # Use ConfigManager values if not specified
         if threshold_mb is None:
@@ -196,6 +197,9 @@ class DirectorySizeMonitor:
                 
         if min_file_size_mb is None:
             min_file_size_mb = config.get("DOCKER_QUOTA_MIN_COMPRESS_SIZE_MB")
+
+        if memory_threshold_percent is None:
+            memory_threshold_percent = config.get("DOCKER_MEMORY_THRESHOLD_PERCENT", 90)
         
         if self.debug:
             print(f"Starting directory size monitoring for {directory}")
@@ -203,12 +207,13 @@ class DirectorySizeMonitor:
             print(f"  - Check interval: {interval_seconds}s")
             print(f"  - Auto-compression: {'Enabled' if compress_on_threshold else 'Disabled'}")
             print(f"  - Min file size: {min_file_size_mb}MB")
+            print(f"  - Memory threshold: {memory_threshold_percent}%")
         sys.stdout.flush()
         
         monitor_thread = threading.Thread(
             target=self._monitor_task,
             args=(directory, process_id, kill_cmd, threshold_mb, interval_seconds, 
-                 compress_on_threshold, min_file_size_mb),
+                 compress_on_threshold, min_file_size_mb, memory_threshold_percent),
             daemon=False
         )
         
@@ -254,7 +259,7 @@ class DirectorySizeMonitor:
         return compressed_count, saved_space, final_dir_size_mb
 
     def _monitor_task(self, directory, process_id, kill_cmd, threshold_mb, interval_seconds,
-                     compress_on_threshold, min_file_size_mb):
+                     compress_on_threshold, min_file_size_mb, memory_threshold_percent):
         """Monitor directory size and take actions when threshold exceeded."""
         threshold_bytes = threshold_mb * 1024 * 1024  # Convert MB to bytes
         target_dirs = ['src', 'docs', 'rtl', 'verif', 'rundir']
@@ -269,6 +274,35 @@ class DirectorySizeMonitor:
                     if compress_on_threshold:
                         self._compress_directory_files(directory, min_file_size_mb)
                     break
+
+                # check host memory usage and force kill if above threshold
+                if memory_threshold_percent is not None:
+                    memory_percent = psutil.virtual_memory().percent
+                    if memory_percent > memory_threshold_percent:
+                        print(
+                            f"Memory usage ({memory_percent:.2f}%) exceeded threshold "
+                            f"({memory_threshold_percent}%). Killing docker process {process_id}."
+                        )
+
+                        # Execute kill command first
+                        if self.debug:
+                            print(f"Executing kill command: {kill_cmd}")
+                        try:
+                            subprocess.run(kill_cmd, shell=True, timeout=30)
+                        except subprocess.TimeoutExpired:
+                            print(f"Kill command timed out after 30 seconds")
+
+                        # Kill process tree
+                        self._kill_process_tree(process_id)
+
+                        # Try compressing files after killing if enabled
+                        if compress_on_threshold:
+                            if self.debug:
+                                print(f"Docker process terminated due to exceeding memory threshold.")
+                            self._compress_directory_files(directory, min_file_size_mb)
+
+                        # Exit the monitoring loop after kill and compression
+                        break                    
                     
                 # Get directory size
                 dir_size = get_directory_size(directory)

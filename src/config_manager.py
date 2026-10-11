@@ -90,18 +90,44 @@ class ConfigManager:
                            description="Timeout for model operations in seconds")
         self.register_config("TASK_TIMEOUT", default=300, type_cast=int,
                            description="Timeout for task operations in seconds")
-        self.register_config("DOCKER_TIMEOUT", default=600, type_cast=int,
+        self.register_config("DOCKER_TIMEOUT", default=180, type_cast=int,
                            description="Timeout for Docker operations in seconds")
-        self.register_config("DOCKER_TIMEOUT_AGENT", default=600, type_cast=int,
+        self.register_config("DOCKER_TIMEOUT_AGENT", default=1000, type_cast=int,
                            description="Timeout for Docker agent operations in seconds")
         self.register_config("QUEUE_TIMEOUT", default=None, type_cast=int,
                            description="Queue timeout in seconds")
+        self.register_config("RESTORE_OVERWRITE_EXISTING", default=False, type_cast=bool,
+                   description="When true, repository prepare() overwrites existing harness files")
         
         # API Keys (not required during initialization, validated when needed)
         self.register_config("OPENAI_USER_KEY", required=False, 
                            description="OpenAI API key for model access")
         self.register_config("ANTHROPIC_API_KEY", required=False,
                            description="Anthropic API key for Claude model access")
+        self.register_config("CLAUDE_API_KEY", required=False,
+                   description="Claude API key for Claude model access")
+        self.register_config("CLAUDE_API_URL", required=False,
+                   description="Claude API base URL (defaults to https://api.anthropic.com)")
+        self.register_config("LOCAL_SERVER_URL", default="http://127.0.0.1:8002", type_cast=str,
+               description="Base URL for local model server")
+        self.register_config("LOCAL_SERVER_API_KEY", required=False,
+               description="Optional API key for local model server")
+        self.register_config("LOCAL_SERVER_API_STYLE", default="auto", type_cast=str,
+                   description="Request format for local model server: auto, openai, claude, or slm")
+        self.register_config("LOCAL_SERVER_MODEL", required=False,
+                   description="Optional model identifier to send to local model server")
+        self.register_config("LOCAL_SERVER_MAX_CONCURRENCY", default=1, type_cast=int,
+               description="Maximum number of concurrent benchmark requests sent to local model server")
+        self.register_config("LOCAL_SERVER_STARTUP_TIMEOUT", default=600, type_cast=int,
+               description="Seconds to wait for local model server health endpoint before failing")
+        self.register_config("LOCAL_SERVER_STARTUP_POLL_INTERVAL", default=2, type_cast=int,
+               description="Polling interval in seconds while waiting for local model server readiness")
+        self.register_config("LOCAL_SERVER_HEALTH_PATH", default="/health", type_cast=str,
+               description="Health endpoint path used to detect local model server readiness")
+        self.register_config("LOCAL_SERVER_REQUEST_TIMEOUT", default=0, type_cast=int,
+               description="Per-request timeout in seconds for local server calls (0 disables timeout)")
+        self.register_config("LOCAL_SERVER_MAX_TOKENS", default=12288, type_cast=int,
+               description="Requested max output tokens for local server generation endpoints")
         self.register_config("NVIDIA_API_KEY", required=False,
                            description="NVIDIA API key for model access")
               

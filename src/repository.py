@@ -29,6 +29,8 @@ dotenv.load_dotenv()
 # Get Docker timeout values from ConfigManager
 DOCKER_TIMEOUT = config.get('DOCKER_TIMEOUT')
 DOCKER_TIMEOUT_AGENT = config.get('DOCKER_TIMEOUT_AGENT')
+DOCKER_TIMEOUT_EXIT_CODE = 124
+
 
 def kill_process_tree(pid):
 
@@ -219,13 +221,44 @@ class Repository:
         except:
             print(f"Failed to write file: {filename}")
 
+    def write_category_env(self, category, difficulty, issue_id):
+        """
+        Write category and difficulty information to .env file in src directory.
+        This makes the category information available to agents and harness tests.
+        
+        Args:
+            category: The category ID (e.g., 'cid1', 'cid2', etc.)
+            difficulty: The difficulty level (e.g., 'easy', 'medium', 'hard')
+            issue_id: The issue/problem ID
+        """
+        env_content = f"""# Problem Category Information
+# Auto-generated during repository preparation
+PROBLEM_CATEGORY={category}
+PROBLEM_DIFFICULTY={difficulty}
+PROBLEM_ID={issue_id}
+"""
+        env_file_path = f"harness/{self.id}/environment/env.txt"
+        self.write_file(env_file_path, env_content)
+        print(f"Category information written to {env_file_path}: {category}, {difficulty}")
+
     # ----------------------------------------
     # - Restore Harness Context
     # ----------------------------------------
 
     def restore_files(self, files):
 
+        overwrite_existing = config.get("RESTORE_OVERWRITE_EXISTING")
+
         for file, content in files.items():
+
+            target_rel_path = f"harness/{self.id}/{file}"
+            target_abs_path = os.path.join(self.name, target_rel_path)
+
+            # Non-destructive restore by default: keep existing files on reruns.
+            if os.path.exists(target_abs_path) and not overwrite_existing:
+                if self.debug:
+                    print(f"Skipping existing file during restore: {target_rel_path}")
+                continue
 
             # Apply centralized template substitution for EDA infrastructure
             content = apply_template_substitution(content)
@@ -271,7 +304,7 @@ class Repository:
                 except Exception as e:
                     print(f"Error processing docker-compose.yml: {str(e)}")
 
-            self.write_file(f"harness/{self.id}/{file}", content)
+            self.write_file(target_rel_path, content)
 
     def try_create_dir(self, path):
 
@@ -347,7 +380,7 @@ class Repository:
             if kill:
                 subprocess.run(kill, shell = True)
 
-            return p.returncode, pid
+            return DOCKER_TIMEOUT_EXIT_CODE, pid
 
         return p.returncode, pid
 
@@ -960,7 +993,7 @@ class Repository:
                 service_log = f'{logfile}{f"_{service}" if len(services) > 1 else ""}.txt'
                 opts   = self.docker_cmd(issue_path)
                 result = self.log_docker(docker, opts, service, service_log)
-                error += result['result']
+                error += int(result['result'] != 0)
                 results.append(result)
 
         else:

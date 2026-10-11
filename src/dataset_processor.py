@@ -21,6 +21,8 @@ from dotenv import load_dotenv
 import shutil
 import subprocess
 import yaml
+import socket
+from urllib.parse import urlparse
 from . import network_util
 from .dir_monitor import DirectorySizeMonitor
 from . import git_utils
@@ -440,6 +442,12 @@ When generating files, return the file name in the correct place at the folder s
         requires_eda_license = commercial_eda.datapoint_requires_eda_license(datapoint)
         
         repo = repository.Repository(name, issue, self.files [id], harness['files'] if harness and 'files' in harness else harness, patches, host=self.host, sbj_llm_model=self.sbj_llm_model, network_name=getattr(self, 'network_name', None), manage_network=getattr(self, 'manage_network', True), requires_eda_license=requires_eda_license)
+        
+        # Write category information to environment file in directory
+        if 'categories' in self.context[id] and len(self.context[id]['categories']) >= 2:
+            category = self.context[id]['categories'][0]
+            difficulty = self.context[id]['categories'][1]
+            repo.write_category_env(category, difficulty, id)
         
         # Network configuration is now passed during construction, no need to set it after
         
@@ -1438,6 +1446,9 @@ class AgenticProcessor (DatasetProcessor):
         ".pytest_cache",
     }
 
+    # Passed to the agent container by name whenever they are set in the launcher
+    # environment (.env), so API keys never need to be baked into an agent image.
+    AGENT_DEFAULT_ENV = ("OPENAI_USER_KEY", "CLAUDE_API_KEY", "ANTHROPIC_API_KEY", "CLAUDE_API_URL")
     AGENT_ENV_OVERRIDE = "CVDP_AGENT_ENV"
     AGENT_MOUNTS_OVERRIDE = "CVDP_AGENT_MOUNTS"
     AGENT_WORKSPACE_ROOTS_OVERRIDE = "CVDP_AGENT_WORKSPACE_ROOTS"
@@ -1451,7 +1462,8 @@ class AgenticProcessor (DatasetProcessor):
         return [item.strip() for item in re.split(r"[,;\s]+", value) if item.strip()]
 
     def _get_agent_environment(self, _agent):
-        env_names = self._split_agent_env_spec(os.environ.get(self.AGENT_ENV_OVERRIDE, ""))
+        env_names = list(self.AGENT_DEFAULT_ENV)
+        env_names += self._split_agent_env_spec(os.environ.get(self.AGENT_ENV_OVERRIDE, ""))
 
         environment = []
         seen = set()
@@ -1467,6 +1479,13 @@ class AgenticProcessor (DatasetProcessor):
 
         if environment:
             print(f"Passing {len(environment)} explicit agent environment variables")
+
+        # A local model server URL is passed by value, rewritten so the container can reach the host.
+        agent_slm_api_url = self._resolve_agent_slm_api_url()
+        if agent_slm_api_url:
+            environment = [key for key in environment if key != "SLM_API_URL"]
+            environment.append(f"SLM_API_URL={agent_slm_api_url}")
+
         return environment
 
     def _split_agent_mount_spec(self, value):
@@ -1797,6 +1816,7 @@ class AgenticProcessor (DatasetProcessor):
     def __init__(self, filename : str, golden : bool = True, threads : int = 1, debug = False, host = False, prefix : str = None, network_name=None, manage_network=True):
         super().__init__(filename, golden, threads, debug, host, prefix, network_name, manage_network)
         self.agent_results = {}
+        self.agent_start_from = None
         # Directory size monitor
         self.dir_monitor = DirectorySizeMonitor()
         # Initialize include flags to False by default
@@ -1843,6 +1863,40 @@ class AgenticProcessor (DatasetProcessor):
         """
         return context['context']
 
+    def _get_host_accessible_ip(self):
+        """
+        Determine a host IP that Docker containers can route to on Linux.
+        """
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                sock.connect(("8.8.8.8", 80))
+                return sock.getsockname()[0]
+        except Exception:
+            return None
+
+    def _resolve_agent_slm_api_url(self):
+        """
+        Resolve an explicit container-reachable SLM API URL override.
+
+        Only apply an override when SLM_API_URL is explicitly set in the
+        launcher environment. If it is not set, preserve the agent image's
+        baked default (for example from Dockerfile ENV).
+        """
+        raw_url = os.getenv("SLM_API_URL")
+        if not raw_url:
+            return None
+
+        if "://" not in raw_url:
+            raw_url = f"http://{raw_url}"
+        parsed = urlparse(raw_url)
+
+        if parsed.hostname in {"localhost", "127.0.0.1", "host.docker.internal"}:
+            host_ip = self._get_host_accessible_ip()
+            if host_ip:
+                raw_url = raw_url.replace(parsed.hostname, host_ip, 1)
+
+        return raw_url
+
     def create_repository (self, id : str, harness = None, name : str = "", issue : str = "", patches = None):
         # Determine if this specific datapoint requires EDA license network
         from src import commercial_eda
@@ -1858,6 +1912,12 @@ class AgenticProcessor (DatasetProcessor):
             repo = repository.AgenticRepository(name, issue, minimal_context, harness, patches, host=self.host, network_name=getattr(self, 'network_name', None), manage_network=getattr(self, 'manage_network', True), requires_eda_license=requires_eda_license)
         else:
             repo = repository.Repository(name, issue, self.files [id], harness, patches, host=self.host, network_name=getattr(self, 'network_name', None), manage_network=getattr(self, 'manage_network', True), requires_eda_license=requires_eda_license)
+        
+        # Write category information to .env file in src directory
+        if 'categories' in self.context[id] and len(self.context[id]['categories']) >= 2:
+            category = self.context[id]['categories'][0]
+            difficulty = self.context[id]['categories'][1]
+            repo.write_category_env(category, difficulty, id)
         
         # Network configuration is now passed during construction, no need to set it after
         
@@ -2023,6 +2083,9 @@ class AgenticProcessor (DatasetProcessor):
         if not agent_environment:
             docker_compose['services']['agent'].pop('environment', None)
 
+        # Let the agent reach a model server running on the host
+        docker_compose['services']['agent']['extra_hosts'] = ['host.docker.internal:host-gateway']
+
         docker_compose['services']['agent']['volumes'].extend(agent_mounts)
         
         # Add golden patch to volumes if it exists
@@ -2048,6 +2111,11 @@ class AgenticProcessor (DatasetProcessor):
             if os.path.exists(docker_compose_yml):
                 docker_compose['services']['agent']['volumes'].append('./docker-compose.yml:/code/docker-compose.yml')
                 print("Original docker-compose.yml will be mounted in the agent container at /code/docker-compose.yml")
+
+            # Add the harness Dockerfile so the agent can see which packages the harness installs
+            harness_dockerfile = os.path.join(issue_path, "Dockerfile")
+            if os.path.exists(harness_dockerfile):
+                docker_compose['services']['agent']['volumes'].append('./Dockerfile:/code/Dockerfile:ro')
         
         # Add network configuration if we have a network name
         if hasattr(self, 'network_name') and self.network_name:
@@ -2646,11 +2714,53 @@ class AgenticProcessor (DatasetProcessor):
         Process all IDs through the agent in parallel, similar to all_prepare and all_run.
         """
         from .parallel_executor import ParallelExecutor
+
+        all_items = list(self.context.keys())
+        start_from = getattr(self, 'agent_start_from', None)
+
+        if start_from:
+            start_reached = False
+            filtered_items = []
+
+            for id in all_items:
+                # Build known directory/id aliases for matching the user's resume marker.
+                name_parts = self.context[id]['id'].split("_")
+                repo_dir = "cvdp_" + "_".join(name_parts[1:-1])
+                issue_id = str(int(name_parts[-1]))
+                harness_rel = os.path.join(repo_dir, "harness", issue_id)
+
+                aliases = {
+                    id,
+                    self.context[id]['id'],
+                    repo_dir,
+                    issue_id,
+                    harness_rel,
+                    os.path.join(self.prefix, repo_dir),
+                    os.path.join(self.prefix, harness_rel),
+                }
+
+                if not start_reached and start_from in aliases:
+                    start_reached = True
+                    print(f"Agent resume marker found: {start_from} (starting from {repo_dir}/harness/{issue_id})")
+
+                if start_reached:
+                    filtered_items.append(id)
+
+            if not start_reached:
+                raise ValueError(
+                    f"Unable to find --start marker '{start_from}' in prepared agent directories under prefix {self.prefix}"
+                )
+
+            skipped_count = len(all_items) - len(filtered_items)
+            print(f"Skipping agent execution for {skipped_count} already-computed datapoints before {start_from}")
+            items_to_process = filtered_items
+        else:
+            items_to_process = all_items
         
         executor = ParallelExecutor(num_workers=self.threads, phase_name="Agent Processing")
         executor.execute_parallel_simple(
             task_func=self.th_agent,
-            items=list(self.context.keys())
+            items=items_to_process
         )
         self._print_agent_summary()
 
@@ -2690,10 +2800,9 @@ class AgenticProcessor (DatasetProcessor):
         """
         # First, call the parent class implementation for standard preparation
         super().all_prepare(model)
-        
-        # Then, if not in golden mode, process all with agent
-        if not self.golden and self.agent:
-            self.all_agent()
+
+        # Note: all_agent() is called from AgenticWrapper.benchmark() after all_prepare(),
+        # so a prepared run directory can be reused and the agent resumed with --start.
 
     # ----------------------------------------
     # - Git Context and Patch Container Methods

@@ -21,6 +21,7 @@ import subprocess
 import json
 import shutil
 import sys
+import re
 from src import network_util
 import atexit
 from typing import List, Dict, Any, Optional
@@ -191,6 +192,19 @@ def run_samples(args: argparse.Namespace, n_samples: int, k_threshold: int) -> N
     """Run multiple samples of run_benchmark.py and combine the results."""
     base_prefix = args.prefix or config.get("BENCHMARK_PREFIX")
     sample_prefixes = []
+
+    # Optional targeted evaluate-only mode for one sample directory
+    target_sample_name = None
+    if getattr(args, "sample", None):
+        raw_sample = str(args.sample).strip()
+        match = re.fullmatch(r"sample_(\d+)", raw_sample)
+        if match:
+            target_sample_name = f"sample_{int(match.group(1))}"
+        elif raw_sample.isdigit():
+            target_sample_name = f"sample_{int(raw_sample)}"
+        else:
+            print("Error: --sample must be in the format sample_<n> or just <n> (e.g., sample_2 or 2)")
+            sys.exit(1)
     
     # Always use run_benchmark.py since harness functionality has been consolidated into it
     script_name = "run_benchmark.py"
@@ -218,15 +232,28 @@ def run_samples(args: argparse.Namespace, n_samples: int, k_threshold: int) -> N
     for i in range(n_samples):
         sample_prefix = os.path.join(base_prefix, f"sample_{i+1}")
         raw_result_exists = os.path.exists(os.path.join(sample_prefix, "raw_result.json"))
-        
+
         if os.path.exists(sample_prefix):
-            if not regenerate_only and not raw_result_exists:
+            if not regenerate_only and not raw_result_exists and target_sample_name is None:
                 print(f"Warning: Sample directory {sample_prefix} exists but no raw_result.json found.")
                 print(f"Will run full sample again.")
             else:
                 existing_samples.append(i)
-        
+
         sample_prefixes.append(sample_prefix)
+
+    if target_sample_name is not None:
+        target_sample_prefix = os.path.join(base_prefix, target_sample_name)
+        if not os.path.isdir(target_sample_prefix):
+            print(f"Error: Target sample directory not found: {target_sample_prefix}")
+            sys.exit(1)
+        if not os.path.isfile(os.path.join(target_sample_prefix, "prompt_response.jsonl")):
+            print(
+                "Error: --sample evaluate mode requires prepared runs file: "
+                f"{os.path.join(target_sample_prefix, 'prompt_response.jsonl')}"
+            )
+            print("Run that sample once normally before using --sample.")
+            sys.exit(1)
     
     # If we're regenerating reports and no existing samples found, warn the user
     if regenerate_only and not existing_samples:
@@ -267,11 +294,19 @@ def run_samples(args: argparse.Namespace, n_samples: int, k_threshold: int) -> N
             print(f"Failed to create shared Docker network, each sample will create its own network")
             shared_network_name = None
     
-    for i in range(n_samples):
+    sample_indices_to_run = list(range(n_samples))
+    if target_sample_name is not None:
+        # Run only the requested sample in evaluate-only mode
+        target_idx = int(target_sample_name.split("_")[1]) - 1
+        sample_indices_to_run = [target_idx]
+
+    for i in sample_indices_to_run:
         sample_prefix = sample_prefixes[i]
         
         # Skip running the full benchmark if only regenerating reports and sample exists
-        if regenerate_only and i in existing_samples:
+        if target_sample_name is not None:
+            print(f"\n=== Evaluating sample {i+1}/{n_samples} ({target_sample_name}) ===")
+        elif regenerate_only and i in existing_samples:
             print(f"\n=== Regenerating report for sample {i+1}/{n_samples} ===")
         else:
             print(f"\n=== Running sample {i+1}/{n_samples} ===")
@@ -289,7 +324,7 @@ def run_samples(args: argparse.Namespace, n_samples: int, k_threshold: int) -> N
         # Add all arguments from the original command
         for arg_name, arg_value in vars(args).items():
             # Skip our custom args and the command argument
-            if arg_name in ["n_samples", "k_threshold", "prefix", "command"]:
+            if arg_name in ["n_samples", "k_threshold", "prefix", "command", "sample"]:
                 continue
             
             # Skip the ID parameter if it's None and we're in benchmark mode
@@ -325,6 +360,10 @@ def run_samples(args: argparse.Namespace, n_samples: int, k_threshold: int) -> N
         # Add the sample-specific prefix
         cmd.append("--prefix")
         cmd.append(sample_prefix)
+
+        # In targeted sample mode, force evaluate-only path for this sample
+        if target_sample_name is not None:
+            cmd.append("--evaluate")
         
         # Always pass regenerate flag if we're only regenerating reports
         if regenerate_only and i in existing_samples and not regenerate_flag_added:
@@ -346,10 +385,27 @@ def run_samples(args: argparse.Namespace, n_samples: int, k_threshold: int) -> N
     
     # Combine the reports
     print("\n=== Combining reports ===")
+
+    if target_sample_name is not None:
+        # Recompute composite from all discovered sample_* directories under base_prefix
+        discovered_sample_dirs = []
+        sample_pattern = re.compile(r"sample_(\d+)$")
+        for name in os.listdir(base_prefix):
+            full_path = os.path.join(base_prefix, name)
+            if os.path.isdir(full_path) and sample_pattern.match(name):
+                discovered_sample_dirs.append((int(sample_pattern.match(name).group(1)), full_path))
+
+        if discovered_sample_dirs:
+            discovered_sample_dirs.sort(key=lambda x: x[0])
+            sample_prefixes = [path for _, path in discovered_sample_dirs]
+            print(f"Recomputing composite report from {len(sample_prefixes)} sample directories in {base_prefix}")
+        else:
+            print(f"Warning: No sample_* directories found under {base_prefix}; using configured sample list")
+
     combine_reports(
         sample_prefixes=sample_prefixes,
         output_prefix=base_prefix,
-        n_samples=n_samples,
+        n_samples=len(sample_prefixes) if target_sample_name is not None else n_samples,
         k_threshold=k_threshold
     )
     
@@ -362,6 +418,8 @@ if __name__ == "__main__":
     # Add our custom arguments for run_samples.py first
     parser.add_argument("-n", "--n-samples", type=int, default=5, help="Number of samples to run")
     parser.add_argument("-k", "--k-threshold", type=int, help="Pass@k threshold (default: 1)", default=1)
+    parser.add_argument("--sample", type=str,
+                       help="Evaluate-only mode for one sample (format: sample_<n> or <n>), then recompute composite report")
     
     # Add common arguments shared with run_benchmark.py
     add_common_arguments(parser)

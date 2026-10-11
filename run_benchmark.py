@@ -332,6 +332,11 @@ def benchmark_main():
     
     # Add common arguments shared with run_samples.py
     add_common_arguments(parser)
+    parser.add_argument(
+        "--evaluate",
+        action="store_true",
+        help="Skip all_prepare/all_agent and run only all_run using existing prepared runs",
+    )
 
     args = parser.parse_args()
 
@@ -353,6 +358,10 @@ def benchmark_main():
 if __name__ == "__main__":
 
     args, filename, use_sbj_scoring = benchmark_main()
+
+    if args.evaluate and args.id:
+        print("Error: --evaluate cannot be combined with --id")
+        sys.exit(1)
 
     # Handle dataset transformation if needed
     if args.force_agentic or args.force_copilot:
@@ -469,6 +478,7 @@ if __name__ == "__main__":
         obj = AgenticBenchmark(**wrapper_args)
         obj.agent = args.agent
         obj.repo.agent = args.agent  # Fix: Also set agent on the repo object
+        obj.repo.agent_start_from = args.start_from
     else:
         obj = CopilotBenchmark(**wrapper_args)
 
@@ -483,6 +493,17 @@ if __name__ == "__main__":
     atexit.register(cleanup_logging)
 
     obj.repo.threads = args.threads
+    if args.llm and not args.agent:
+        model_to_use = args.model if args.model is not None else config.get("DEFAULT_MODEL")
+        if model_to_use in ["local_server", "localhost8001"]:
+            local_server_workers = max(1, int(config.get("LOCAL_SERVER_MAX_CONCURRENCY", 1)))
+            if obj.repo.threads > local_server_workers:
+                print(
+                    "Capping benchmark threads for local_server mode "
+                    f"from {obj.repo.threads} to {local_server_workers} "
+                    "to avoid local GPU server overload."
+                )
+                obj.repo.threads = local_server_workers
     obj.repo.disable_patch = args.no_patch  # Pass the disable_patch flag to the repo
     
     # Only create model if we're in LLM mode and either:
@@ -575,7 +596,23 @@ if __name__ == "__main__":
                 
             else:
                 # Full benchmark mode (original functionality)
-                res = obj.benchmark(runs_file=args.answers)
+                if args.evaluate:
+                    obj.repo.process_json()
+
+                    prepared_runs_file = args.answers or os.path.join(obj.repo.prefix, "prompt_response.jsonl")
+                    if not os.path.exists(prepared_runs_file):
+                        raise FileNotFoundError(
+                            f"--evaluate requires prepared runs file: {prepared_runs_file}. "
+                            "Run a normal benchmark once (or pass --answers)."
+                        )
+
+                    loaded = obj._load_prepared_runs(prepared_runs_file)
+                    print(f"Evaluate-only mode: loaded {loaded} prepared runs from {prepared_runs_file}")
+
+                    # Intentionally skip all_prepare() and all_agent().
+                    res = obj.repo.all_run(obj.model)
+                else:
+                    res = obj.benchmark(runs_file=args.answers)
 
                 # Skip report generation for models that don't require evaluation (e.g., local_export)
                 if hasattr(obj.model, 'requires_evaluation') and not obj.model.requires_evaluation:

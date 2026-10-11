@@ -12,3 +12,18 @@ work_*.txt
 /refinement_analysis*
 /failure_analysis*/
 /model_sweep_results*
+
+# Benchmark run directories
+/deepseek*
+/gpt*
+/claude*
+/granite*
+/phi*
+/smollm*
+/local*
+/nemotron*
+/jamba*
+/temp*
+/testrun*
+/run_*/
+/main_agent/SLM_agent/.env
