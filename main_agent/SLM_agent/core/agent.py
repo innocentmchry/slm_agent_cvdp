@@ -5,6 +5,7 @@ import logging
 from typing import Optional
 from config.settings import AgentConfig
 from utils.logger import setup_logging
+from utils.metrics import MetricsRecorder
 from llm.api_client import UnifiedAPIClient
 from llm.response_parser import ResponseParser
 from prompts.prompt_builder import PromptBuilder
@@ -58,6 +59,17 @@ class IterativeRefinementAgent:
     
     def _initialize_components(self):
         """Initialize all agent components"""
+        # Run metrics (token usage, latency, iteration outcomes)
+        self.metrics = MetricsRecorder(
+            self.config.metrics_file,
+            api_type=self.config.api_type,
+            model=self.config.slm_model,
+            max_iterations=self.config.max_iterations,
+            temperature=self.config.slm_temperature,
+            top_p=self.config.slm_top_p,
+            max_tokens=self.config.slm_max_length
+        )
+
         # LLM interface - supports SLM, OpenAI, and Claude
         if self.config.api_type == "openai":
             self.llm_client = UnifiedAPIClient(
@@ -67,7 +79,8 @@ class IterativeRefinementAgent:
                 timeout=self.config.slm_timeout,
                 temperature=self.config.slm_temperature,
                 top_p=self.config.slm_top_p,
-                openai_api_key=self.config.openai_api_key
+                openai_api_key=self.config.openai_api_key,
+                metrics=self.metrics
             )
         elif self.config.api_type == "claude":
             self.llm_client = UnifiedAPIClient(
@@ -78,7 +91,8 @@ class IterativeRefinementAgent:
                 temperature=self.config.slm_temperature,
                 top_p=self.config.slm_top_p,
                 claude_api_key=self.config.claude_api_key,
-                claude_api_url=self.config.claude_api_url
+                claude_api_url=self.config.claude_api_url,
+                metrics=self.metrics
             )
         else:
             self.llm_client = UnifiedAPIClient(
@@ -88,7 +102,8 @@ class IterativeRefinementAgent:
                 timeout=self.config.slm_timeout,
                 temperature=self.config.slm_temperature,
                 top_p=self.config.slm_top_p,
-                api_url=self.config.slm_api_url
+                api_url=self.config.slm_api_url,
+                metrics=self.metrics
             )
         
         self.response_parser = ResponseParser()
@@ -119,7 +134,8 @@ class IterativeRefinementAgent:
             port_analyzer=self.port_analyzer,
             test_runner=self.test_runner,
             max_iterations=self.config.max_iterations,
-            enable_port_validation=self.config.enable_port_validation
+            enable_port_validation=self.config.enable_port_validation,
+            metrics=self.metrics
         )
     
     def run(self) -> int:
@@ -129,6 +145,7 @@ class IterativeRefinementAgent:
         Returns:
             Exit code (0 for success)
         """
+        success = False
         try:
             logger.info("=" * 80)
             logger.info("STARTING AGENT EXECUTION")
@@ -178,3 +195,6 @@ class IterativeRefinementAgent:
         except Exception as e:
             logger.error(f"\nAgent failed with exception: {e}", exc_info=True)
             return 0  # Exit cleanly even on error
+
+        finally:
+            self.metrics.finish(success)

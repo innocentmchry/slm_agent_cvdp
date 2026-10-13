@@ -21,7 +21,8 @@ class RefinementLoop:
         port_analyzer,
         test_runner,
         max_iterations: int,
-        enable_port_validation: bool
+        enable_port_validation: bool,
+        metrics=None
     ):
         """
         Initialize refinement loop
@@ -35,6 +36,7 @@ class RefinementLoop:
             test_runner: Test runner
             max_iterations: Maximum refinement iterations
             enable_port_validation: Enable port usage validation
+            metrics: Optional MetricsRecorder for per-iteration outcomes
         """
         self.llm_client = llm_client
         self.prompt_builder = prompt_builder
@@ -44,6 +46,7 @@ class RefinementLoop:
         self.test_runner = test_runner
         self.max_iterations = max_iterations
         self.enable_port_validation = enable_port_validation
+        self.metrics = metrics
         
         self.iteration = 0
         self.code = None
@@ -69,6 +72,9 @@ class RefinementLoop:
             logger.info(f"ITERATION {self.iteration}/{self.max_iterations}")
             logger.info("=" * 80)
             
+            if self.metrics:
+                self.metrics.start_iteration(self.iteration, "initial" if self.iteration == 1 else "refinement")
+
             # Build appropriate prompt
             if self.iteration == 1:
                 prompt = self.prompt_builder.build_initial_prompt(task, context)
@@ -89,6 +95,8 @@ class RefinementLoop:
             
             # Generate code
             response = self.llm_client.generate(prompt)
+            if self.metrics:
+                self.metrics.update_iteration(llm_success=bool(response))
             if not response:
                 logger.error("LLM generation failed")
                 if self.code:  # Keep previous code
@@ -111,7 +119,10 @@ class RefinementLoop:
             # Extract and validate code
             self.code = self.response_parser.extract_verilog(response)
             
-            if not self.response_parser.validate_basic_structure(self.code):
+            structure_valid = self.response_parser.validate_basic_structure(self.code)
+            if self.metrics:
+                self.metrics.update_iteration(structure_valid=bool(structure_valid))
+            if not structure_valid:
                 logger.warning("Code failed basic structure validation")
                 self.errors = "Code structure validation failed: missing module/endmodule or unbalanced parentheses"
                 continue
@@ -129,7 +140,14 @@ class RefinementLoop:
             
             # Run tests
             logger.info("Running compilation test and Checking if test case(s) pass")
+            test_start = time.time()
             self.compilation_success, self.test_success, self.warnings, self.errors = self.test_runner.run(self.code)
+            if self.metrics:
+                self.metrics.update_iteration(
+                    compilation_success=bool(self.compilation_success),
+                    test_success=bool(self.test_success),
+                    test_time_ms=round((time.time() - test_start) * 1000, 1)
+                )
 
             # Write code only if compilation succeeded.
             if self.compilation_success:         

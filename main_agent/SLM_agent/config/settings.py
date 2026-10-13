@@ -32,7 +32,7 @@ class AgentConfig:
     """Configuration for SLM Agent with validation"""
     
     # Iteration settings
-    max_iterations: int = 3
+    max_iterations: int = 5
     early_exit_on_success: bool = True
     
     # API settings - supports local SLM, OpenAI, and Claude
@@ -44,7 +44,7 @@ class AgentConfig:
     claude_api_key: str = field(default_factory=lambda: os.getenv("CLAUDE_API_KEY") or os.getenv("ANTHROPIC_API_KEY", ""))
     claude_api_url: str = field(default_factory=lambda: os.getenv("CLAUDE_API_URL", "https://api.anthropic.com"))
     slm_model: str = field(default_factory=lambda: os.getenv("SLM_MODEL", "granite"))
-    slm_max_length: int = field(default_factory=lambda: int(os.getenv("SLM_MAX_LENGTH", "12288")))
+    slm_max_length: int = field(default_factory=lambda: int(os.getenv("SLM_MAX_LENGTH", "32768")))
     slm_timeout: int = field(default_factory=lambda: int(os.getenv("SLM_TIMEOUT", "300")))
     slm_temperature: float = field(default_factory=lambda: float(os.getenv("SLM_TEMPERATURE", "0.15")))
     slm_top_p: float = field(default_factory=lambda: float(os.getenv("SLM_TOP_P", "0.95")))
@@ -64,6 +64,7 @@ class AgentConfig:
     
     # Logging
     log_file: str = '/code/rundir/agent_detailed.log'
+    metrics_file: str = '/code/rundir/agent_metrics.json'
     
     def validate(self) -> None:
         """Validate configuration values"""

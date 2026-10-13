@@ -80,7 +80,7 @@ To pass any other variable to the agent, list its name in `CVDP_AGENT_ENV`, for 
 The agent sends `POST {SLM_API_URL}/generate` with this JSON body:
 
 ```json
-{"prompt": "...", "max_length": 12288, "model": "phi", "temperature": 0.7, "top_p": 0.95}
+{"prompt": "...", "max_length": 32768, "model": "phi", "temperature": 0.7, "top_p": 0.95}
 ```
 
 It reads the generated text from the first of these response fields that exists: `generated_text`, `text`, `response`, `output`, `result`.
@@ -256,6 +256,7 @@ The local server backend is configured in the root `.env`:
         ├── docs/, verif/, src/    Problem files and test harness
         ├── environment/env.txt    Problem category and difficulty
         ├── rundir/agent_detailed.log   Detailed agent log
+        ├── rundir/agent_metrics.json   Tokens, latency and outcome of every LLM call and iteration
         ├── agent_changes.patch    What the agent changed
         ├── docker-compose-agent.yml, run_docker_agent.sh
         └── docker-compose.yml, run_docker_harness_*.sh
@@ -270,7 +271,7 @@ For each problem, the harness starts one agent container with the problem direct
 1. **Read the task** from `/code/prompt.json`.
 2. **Gather context**: the files under `rtl/`, `docs/` and `verif/`, in that order. Context is limited to about 75% of the model's token budget (`SLM_MAX_LENGTH`). When it does not fit, RTL is kept and documentation and verification files are truncated.
 3. **Pick the target file**: an empty file in `/code/rtl` if there is one. Otherwise the name comes from `VERILOG_SOURCES` in the harness file `/code/src/.env`, falling back to `<TOPLEVEL>.sv`.
-4. **Refinement loop**, up to 3 iterations:
+4. **Refinement loop**, up to 5 iterations:
    1. Build the prompt. The first prompt contains the system prompt, a category-specific instruction, the task and the context files. Later prompts add the previous code and its errors.
    2. Call the model.
    3. Extract the Verilog from the response and check it has balanced `module`/`endmodule`. If the top module name does not match `TOPLEVEL`, rename the closest-named module.
@@ -341,8 +342,8 @@ Set at build time through `build_agent.sh` or `--build-arg`:
 | `API_TYPE` | `slm` | `slm`, `openai` or `claude` |
 | `SLM_MODEL` | `phi` | Model name sent to the API or server |
 | `SLM_PORT` | `8001` | Port of the local model server, `slm` mode only. Second argument of `build_agent.sh` |
-| `SLM_MAX_LENGTH` | `12288` | Maximum output tokens. Also sets the context budget |
-| `SLM_TIMEOUT` | `1000` | Model request timeout in seconds |
+| `SLM_MAX_LENGTH` | `32768` | Maximum output tokens. Also sets the context budget. Lowered automatically to the output limit of OpenAI models that have a smaller one |
+| `SLM_TIMEOUT` | `1800` | Model request timeout in seconds |
 | `SLM_TEMPERATURE` | `0.7` | Sampling temperature |
 | `SLM_TOP_P` | `0.95` | Nucleus sampling. Not sent to Claude |
 
@@ -350,7 +351,7 @@ Set in code, which needs a rebuild to change:
 
 | Setting | Value | Where |
 |---|---|---|
-| `max_iterations` | 3 | `main.py` |
+| `max_iterations` | 5 | `main.py` |
 | `test_timeout` | 180 s | `config/settings.py` |
 | `lint_timeout` | 30 s | `config/settings.py` |
 
@@ -417,6 +418,7 @@ Compared with upstream `NVlabs/cvdp_benchmark` at commit `8e894cf` (v1.1.0 tooli
 |---|---|
 | `scripts/recover_rtl_from_agent_logs.py <run-dir> [--dry-run]` | Rebuilds each problem's `rtl/` from the last "EXTRACTED CODE" block in `reports/<n>_agent.txt`. Replaces existing RTL files |
 | `scripts/rename_rtl_from_env_sources.py <run-dir> [--dry-run]` | Renames RTL files to the filename the harness expects, taken from `VERILOG_SOURCES` in each problem's `src/.env` |
+| `scripts/metrics_report.py <run-dir> [-o file.html]` | Collects every `rundir/agent_metrics.json` and `raw_result.json` into one HTML page (default `<run-dir>/metrics_report.html`) with tokens, latency, cost and iterations per problem. Cost uses the price table at the top of the script, or `--price-input` / `--price-cached` / `--price-output` in USD per 1M tokens |
 | `scripts/separate.py` | Splits a dataset into one `.jsonl` per category. Edit the input and output paths at the top of the file first |
 
 ## Troubleshooting

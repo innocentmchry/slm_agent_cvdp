@@ -27,3 +27,5 @@ work_*.txt
 /testrun*
 /run_*/
 /main_agent/SLM_agent/.env
+temp*
+/old*

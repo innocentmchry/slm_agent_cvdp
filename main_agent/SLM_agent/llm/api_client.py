@@ -4,6 +4,7 @@
 import requests
 import logging
 import socket
+import time
 from typing import Optional, Dict
 from openai import OpenAI
 import re
@@ -82,13 +83,23 @@ def resolve_host_docker_internal(url: str) -> str:
         return url
 
 
+# Output token limits of OpenAI models, matched by model name prefix. A request
+# with a larger max_tokens is rejected, so the configured value is lowered to fit.
+OPENAI_MAX_OUTPUT_TOKENS = {
+    "gpt-4o": 16384,
+    "gpt-4-turbo": 4096,
+    "gpt-3.5-turbo": 4096,
+}
+
+
 class UnifiedAPIClient:
     """Unified interface for SLM, OpenAI, and Claude APIs"""
     
     def __init__(self, api_type: str, model: str, max_length: int, timeout: int,
                  temperature: float = 0.15, top_p: float = 0.95,
                  api_url: Optional[str] = None, openai_api_key: Optional[str] = None,
-                 claude_api_key: Optional[str] = None, claude_api_url: Optional[str] = None):
+                 claude_api_key: Optional[str] = None, claude_api_url: Optional[str] = None,
+                 metrics=None):
         """
         Initialize unified API client
         
@@ -103,6 +114,7 @@ class UnifiedAPIClient:
             openai_api_key: OpenAI API key (required for OpenAI)
             claude_api_key: Claude API key (required for Claude)
             claude_api_url: Base URL of Claude API (optional, defaults to Anthropic API)
+            metrics: Optional MetricsRecorder that receives one record per API call
         """
         self.api_type = api_type.lower()
         self.model = model
@@ -110,11 +122,18 @@ class UnifiedAPIClient:
         self.timeout = timeout
         self.temperature = temperature
         self.top_p = top_p
+        self.metrics = metrics
+        self._call_info: Dict = {}
         
         if self.api_type == "openai":
             if not openai_api_key:
                 raise ValueError("OpenAI API key is required for OpenAI API type")
             self.openai_client = OpenAI(api_key=openai_api_key)
+            for prefix, limit in OPENAI_MAX_OUTPUT_TOKENS.items():
+                if model.startswith(prefix) and max_length > limit:
+                    logger.warning(f"max_length {max_length} is above the {model} output limit; using {limit}")
+                    self.max_length = limit
+                    break
             logger.info(f"Initialized OpenAI API Client")
             logger.info(f"  Model: {model}")
             logger.info(f"  Max length: {max_length}")
@@ -169,15 +188,41 @@ class UnifiedAPIClient:
         top_p = self.top_p if top_p is None else top_p
         prompt = self._sanitize_prompt(prompt)
 
+        # Filled in by the _generate_* methods with usage details and errors
+        self._call_info = {}
+        start_time = time.time()
+
         if self.api_type == "openai":
-            return self._generate_openai(prompt, temperature, top_p)
+            result = self._generate_openai(prompt, temperature, top_p)
         elif self.api_type == "claude":
-            return self._generate_claude(prompt, temperature, top_p)
+            result = self._generate_claude(prompt, temperature, top_p)
         elif self.api_type == "slm":
-            return self._generate_slm(prompt, temperature, top_p)
+            result = self._generate_slm(prompt, temperature, top_p)
         else:
             logger.error(f"Unknown API type: {self.api_type}")
-            return None
+            result = None
+
+        self._record_call(prompt, result, temperature, top_p, time.time() - start_time)
+        return result
+
+    def _record_call(self, prompt: str, result: Optional[str], temperature: float,
+                     top_p: float, elapsed: float) -> None:
+        """Send one call record (usage, latency, outcome) to the metrics recorder."""
+        if self.metrics is None:
+            return
+        try:
+            self.metrics.record_call(
+                success=bool(result),
+                latency_ms=round(elapsed * 1000, 1),
+                prompt_chars=len(prompt),
+                response_chars=len(result) if result else 0,
+                temperature=temperature,
+                top_p=top_p,
+                max_tokens=self.max_length,
+                **self._call_info
+            )
+        except Exception as e:
+            logger.warning(f"Could not record call metrics: {e}")
 
     @staticmethod
     def _sanitize_prompt(prompt: str) -> str:
@@ -223,6 +268,20 @@ class UnifiedAPIClient:
 
             if response.status_code == 200:
                 data = response.json()
+                usage = data.get("usage") or {}
+                # Anthropic reports cache reads/writes separately from input_tokens
+                cached_tokens = usage.get("cache_read_input_tokens") or 0
+                input_tokens = (usage.get("input_tokens") or 0) + cached_tokens + (usage.get("cache_creation_input_tokens") or 0)
+                output_tokens = usage.get("output_tokens") or 0
+                self._call_info.update({
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "total_tokens": input_tokens + output_tokens,
+                    "cached_input_tokens": cached_tokens,
+                    "finish_reason": data.get("stop_reason"),
+                    "response_model": data.get("model"),
+                    "response_id": data.get("id"),
+                })
                 content_blocks = data.get("content", [])
                 text_blocks = [
                     block.get("text", "")
@@ -238,16 +297,20 @@ class UnifiedAPIClient:
                 return None
 
             logger.error(f"Claude API error {response.status_code}: {response.text}")
+            self._call_info["error"] = f"HTTP {response.status_code}"
             return None
 
         except requests.Timeout:
             logger.error(f"Claude API timeout after {self.timeout}s")
+            self._call_info["error"] = "timeout"
             return None
         except requests.RequestException as e:
             logger.error(f"Claude API request failed: {e}")
+            self._call_info["error"] = f"{type(e).__name__}: {e}"
             return None
         except Exception as e:
             logger.error(f"Unexpected error calling Claude API: {e}")
+            self._call_info["error"] = f"{type(e).__name__}: {e}"
             return None
     
     def _generate_openai(self, prompt: str, temperature: float, top_p: float) -> Optional[str]:
@@ -267,8 +330,26 @@ class UnifiedAPIClient:
                 top_p=top_p,
                 timeout=self.timeout
             )
+
+            usage = response.usage
+            if usage is not None:
+                prompt_details = getattr(usage, "prompt_tokens_details", None)
+                completion_details = getattr(usage, "completion_tokens_details", None)
+                self._call_info.update({
+                    "input_tokens": usage.prompt_tokens,
+                    "output_tokens": usage.completion_tokens,
+                    "total_tokens": usage.total_tokens,
+                    "cached_input_tokens": getattr(prompt_details, "cached_tokens", None) or 0,
+                    "reasoning_tokens": getattr(completion_details, "reasoning_tokens", None) or 0,
+                })
+            self._call_info.update({
+                "response_model": response.model,
+                "response_id": response.id,
+                "system_fingerprint": getattr(response, "system_fingerprint", None),
+            })
             
             if response.choices and len(response.choices) > 0:
+                self._call_info["finish_reason"] = response.choices[0].finish_reason
                 result = response.choices[0].message.content
                 if result:
                     logger.info(f"Received {len(result)} characters from OpenAI")
@@ -282,6 +363,7 @@ class UnifiedAPIClient:
                 
         except Exception as e:
             logger.error(f"OpenAI API error: {e}")
+            self._call_info["error"] = f"{type(e).__name__}: {e}"
             return None
     
     def _generate_slm(self, prompt: str, temperature: float, top_p: float) -> Optional[str]:
@@ -308,7 +390,32 @@ class UnifiedAPIClient:
             
             if response.status_code == 200:
                 data = response.json()
-                
+
+                # Token usage, when the server reports it (scripts/slm_server.py does)
+                if isinstance(data, dict):
+                    input_tokens = data.get("prompt_tokens")
+                    output_tokens = data.get("completion_tokens")
+                    if input_tokens is not None and output_tokens is not None:
+                        self._call_info.update({
+                            "input_tokens": input_tokens,
+                            "output_tokens": output_tokens,
+                            "total_tokens": input_tokens + output_tokens,
+                            "cached_input_tokens": 0,
+                            "reasoning_tokens": data.get("reasoning_tokens") or 0,
+                        })
+                    self._call_info.update({
+                        "response_model": data.get("model"),
+                        "finish_reason": data.get("finish_reason"),
+                    })
+                    # GPU energy, power, utilization and peak memory of this call
+                    self._call_info.update({
+                        key: value for key, value in data.items()
+                        if key.startswith("gpu_") and value is not None
+                    })
+                    reasoning = data.get("reasoning")
+                    if reasoning:
+                        logger.info(f"SLM reasoning ({len(reasoning)} chars):\n{reasoning}")
+
                 # Try multiple field names that different SLM APIs might use
                 for field in ['generated_text', 'text', 'response', 'output', 'result']:
                     if field in data:
@@ -322,16 +429,20 @@ class UnifiedAPIClient:
                 return result
             else:
                 logger.error(f"SLM API error {response.status_code}: {response.text}")
+                self._call_info["error"] = f"HTTP {response.status_code}"
                 return None
                 
         except requests.Timeout:
             logger.error(f"SLM API timeout after {self.timeout}s")
+            self._call_info["error"] = "timeout"
             return None
         except requests.RequestException as e:
             logger.error(f"SLM API request failed: {e}")
+            self._call_info["error"] = f"{type(e).__name__}: {e}"
             return None
         except Exception as e:
             logger.error(f"Unexpected error calling SLM API: {e}")
+            self._call_info["error"] = f"{type(e).__name__}: {e}"
             return None
 
 
